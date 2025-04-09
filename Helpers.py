@@ -1,5 +1,6 @@
 import asyncio
 import re
+import threading
 from datetime import timedelta
 from http.client import InvalidURL
 import random
@@ -7,6 +8,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 import discord
+import requests
 from discord import VoiceClient, app_commands, Embed
 from discord.ext.commands import Cog, Bot
 
@@ -26,6 +28,17 @@ ydl_opts = {
     'outtmpl': '%(title)s.%(ext)s',
     'restrictfilenames': True,
     'noplaylist': True,
+}
+
+ffmpeg_before_options = (
+    "-reconnect 1 " 
+    "-reconnect_streamed 1 "
+    "-reconnect_at_eof 0 " 
+    "-reconnect_delay_max 2 "
+)
+ffmpeg_options = {
+    'options': '-vn',
+    'before_options': ffmpeg_before_options
 }
 
 class UserNotInVoiceException(Exception):
@@ -121,6 +134,7 @@ class Getter:
             else:
                 song = self.fetch_from_yt(name)
                 songs.append(song)
+        return songs
 
     def get_song_by_url(self, url: str) -> Song:
         db_song = self.db.get_by_url(Song, url)
@@ -128,6 +142,14 @@ class Getter:
             return db_song
         else:
             return self.fetch_from_url(url)
+
+    def reload_stream_url(self, song: Song) -> Song:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(song.url, download=False)
+            song.stream_url = info['url']
+            self.db.update(Song, song)
+            return song
+
 
 
 class Manager(Cog):
@@ -141,10 +163,8 @@ class Manager(Cog):
 
     def next(self) -> Optional[Song]:
         if len(self.queue) > 0:
-            self.current_song = self.queue.pop(0)
-            return self.current_song
+            return self.queue.pop(0)
         else:
-            self.current_song = None
             return None
 
     def add_to_queue(self, song: Song) -> bool:
@@ -210,20 +230,27 @@ class Manager(Cog):
             else:
                 return True
 
-    def prepare_source(self):
-        return discord.FFmpegPCMAudio(self.current_song.stream_url)
+    async def set_status(self):
+        if self.current_song:
+            await self.bot.change_presence(activity=discord.Game(name=self.current_song.name))
+        else:
+            await self.bot.change_presence(activity=discord.Game(name="Nix"))
 
     def _play(self, error=None):
         if error:
             print(f"Error playing song: {error}")
             self.queue.clear()
             self.voice_client.stop()
+            self.bot.loop.create_task(self.set_status())
         else:
             self.next()
             if self.current_song is None:
                 return
-            self.voice_client.play(asyncio.to_thread(self.prepare_source), after=self._play)
-
+            self.bot.loop.create_task(self.set_status())
+            if requests.head(self.current_song.stream_url, allow_redirects=True).status_code == 403:
+                self.current_song = self.getter.reload_stream_url(self.current_song)
+            source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
+            threading.Thread(target=lambda: self.voice_client.play(source, after=self._play, bitrate=256, signal_type="music")).start()
 
     @app_commands.command(name="play", description="Play a song")
     @app_commands.describe(song="Name or URL of the song")
@@ -237,14 +264,14 @@ class Manager(Cog):
             raise DifferentVoiceChannelException()
 
         if validators.url(song):
-            song: Song = await asyncio.to_thread(self.getter.fetch_from_url, song)
+            song: Song = self.getter.fetch_from_url(song)
         else:
-            song: Song = await asyncio.to_thread(self.getter.get_song_by_name, song)
+            song: Song = self.getter.get_song_by_name(song)
 
         self.add_to_queue(song)
         if not self.is_playing():
             self._play()
-        await asyncio.to_thread(interaction.followup.send, f"{song.name} zur Warteschlange hinzugefügt")
+        await interaction.followup.send(f"{song.name} zur Warteschlange hinzugefügt")
 
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
@@ -255,7 +282,8 @@ class Manager(Cog):
 
         if self.is_playing():
             await interaction.response.send_message(f"Song geskippt: {self.current_song.name}")
-            self.current_song = self.next()
+            self.voice_client.stop()
+            self._play()
         else:
             await interaction.response.send_message("Ich spiele nichts")
 

@@ -83,7 +83,15 @@ class Database:
     def get_by_name(self, table: Type[T], name: str) -> T:
         if not hasattr(table, 'name'):
             raise ValueError(f"Table {table.__tablename__} does not have a 'name' column.")
-        return self.session.query(table).filter(table.name == name).first()
+
+        search_term = f"%{name.replace(' ', '').lower()}%"
+
+        from sqlalchemy import func
+        return (
+            self.session.query(table)
+            .filter(func.replace(func.lower(table.name), ' ', '').like(search_term))
+            .first()
+        )
 
     def get_bulk_by_name(self, table: Type[T], name: List[str]) -> List[T]:
         if not hasattr(table, 'name'):

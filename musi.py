@@ -21,13 +21,6 @@ async def on_ready():
 async def globally_block_dms(ctx: Context):
     return ctx.guild is not None
 
-@bot.check
-async def globally_block_normal_commands(ctx: Context):
-    if str(ctx.message).startswith("-"):
-        await ctx.send("Es gibt nurmehr / commands")
-        return False
-    return True
-
 @bot.command(name="sync")
 @commands.is_owner()
 async def sync(ctx: Context):
