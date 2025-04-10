@@ -151,3 +151,9 @@ class Database:
             self.session.delete(o)
         self.session.commit()
         return True
+
+    def get_dummy(self, table: Type[T]) -> T:
+        if table is Artist or table is Song:
+            return self.session.query(table).first()
+        else:
+            raise ValueError(f"Table {table.__tablename__} is not a valid table for this operation.")

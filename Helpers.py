@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 import discord
 import requests
-from discord import VoiceClient, app_commands, Embed
+from discord import VoiceClient, app_commands, Embed, VoiceProtocol
 from discord.ext.commands import Cog, Bot
 
 from Database import *
@@ -143,7 +143,7 @@ class Getter:
         else:
             return self.fetch_from_url(url)
 
-    def reload_stream_url(self, song: Song) -> Song:
+    async def reload_stream_url(self, song: Song) -> Song:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(song.url, download=False)
             song.stream_url = info['url']
@@ -236,21 +236,40 @@ class Manager(Cog):
         else:
             await self.bot.change_presence(activity=discord.Game(name="Nix"))
 
+    def run_play(self, source):
+        self.voice_client.play(source, after=self._play, bitrate=256, signal_type="music")
+
     def _play(self, error=None):
         if error:
             print(f"Error playing song: {error}")
-            self.queue.clear()
-            self.voice_client.stop()
-            self.bot.loop.create_task(self.set_status())
-        else:
-            self.next()
-            if self.current_song is None:
-                return
-            self.bot.loop.create_task(self.set_status())
-            if requests.head(self.current_song.stream_url, allow_redirects=True).status_code == 403:
-                self.current_song = self.getter.reload_stream_url(self.current_song)
-            source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
-            threading.Thread(target=lambda: self.voice_client.play(source, after=self._play, bitrate=256, signal_type="music")).start()
+
+        self.next()
+        if self.current_song is None:
+            return
+        print("Playing1: ", self.current_song)
+        self.bot.loop.create_task(self.set_status())
+        print("Playing2: ", self.current_song)
+        stream = self.current_song.stream_url
+        print("Playing3: ", self.current_song)
+        head = requests.head(stream, allow_redirects=True) # removed den scheiß currentsog aus irgendeinem grund
+        print("Playing4: ", self.current_song)
+        if head.status_code == 403:
+            print("reloaded URL")
+            self.current_song = self.getter.reload_stream_url(self.current_song)
+            print("Playing4: ", self.current_song)
+        print("Playing5: ", self.current_song)
+        source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
+        threading.Thread(target=self.run_play(source)).start() # thread im thread
+
+
+    def get_voice_client_on_reload(self):
+        vcs = self.bot.voice_clients
+        return vcs[0] if vcs else None
+
+    async def cog_load(self):
+        if not self.voice_client and self.get_voice_client_on_reload():
+            self.voice_client = self.get_voice_client_on_reload()
+            self.current_song = self.getter.db.get_dummy(Song)
 
     @app_commands.command(name="play", description="Play a song")
     @app_commands.describe(song="Name or URL of the song")

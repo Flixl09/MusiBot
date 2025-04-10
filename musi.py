@@ -27,6 +27,13 @@ async def sync(ctx: Context):
     await bot.tree.sync()
     await ctx.send("Synced commands!")
 
+@bot.command(name="suicide")
+@commands.is_owner()
+async def suicide(ctx: Context):
+    await bot.remove_cog("Manager")
+    await bot.add_cog(Manager(bot))
+    await ctx.send("MUSIIIIII REEEELOADDDDEEEEEEEDDDD DAN DAN DANDAN DANDAN DANDANDANDAN DAN DAN")
+
 with open("token", "r") as f:
     token = f.read().strip()
 
