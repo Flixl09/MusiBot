@@ -148,7 +148,7 @@ class Getter:
             info = ydl.extract_info(song.url, download=False)
             song.stream_url = info['url']
             self.db.update(Song, song)
-            return song
+        return song
 
 
 
@@ -161,11 +161,11 @@ class Manager(Cog):
         self.getter: Getter = Getter()
         self.tree = bot.tree
 
-    def next(self) -> Optional[Song]:
+    def next(self):
         if len(self.queue) > 0:
-            return self.queue.pop(0)
+            self.current_song = self.queue.pop(0)
         else:
-            return None
+            self.current_song = None
 
     def add_to_queue(self, song: Song) -> bool:
         self.queue.append(song)
