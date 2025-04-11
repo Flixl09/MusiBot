@@ -1,9 +1,12 @@
 import asyncio
+import datetime
 import re
 import threading
+import time
 from datetime import timedelta
 from http.client import InvalidURL
 import random
+from math import floor
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -144,11 +147,19 @@ class Getter:
             return self.fetch_from_url(url)
 
     async def reload_stream_url(self, song: Song) -> Song:
+        s: Song = song
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(song.url, download=False)
-            song.stream_url = info['url']
-            self.db.update(Song, song)
-        return song
+            s.stream_url = info['url']
+            self.db.update(Song, s)
+        return s
+
+    def get_stream_url_with_time(self, song: Song, time: int) -> Song:
+        s: Song = song
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(song.url, download=False)
+            s.stream_url = info['url'] + "?p=" + str(floor(time))
+        return s
 
 
 
@@ -160,6 +171,7 @@ class Manager(Cog):
         self.voice_client: VoiceClient = None
         self.getter: Getter = Getter()
         self.tree = bot.tree
+        self.song_playing_since: Optional[float] = None
 
     def next(self):
         if len(self.queue) > 0:
@@ -237,29 +249,31 @@ class Manager(Cog):
             await self.bot.change_presence(activity=discord.Game(name="Nix"))
 
     def run_play(self, source):
-        self.voice_client.play(source, after=self._play, bitrate=256, signal_type="music")
+        self.song_playing_since = time.time()
+        self.voice_client.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self._play, e), bitrate=256, signal_type="music")
 
     def _play(self, error=None):
+        self.song_playing_since = None
         if error:
             print(f"Error playing song: {error}")
 
         self.next()
         if self.current_song is None:
             return
-        print("Playing1: ", self.current_song)
+
+        def background_work():
+            print("Playing1:", self.current_song)
+            stream = self.current_song.stream_url
+            head = requests.head(stream, allow_redirects=True)
+            if head.status_code == 403:
+                print("Reloaded URL")
+                self.current_song = self.getter.reload_stream_url(self.current_song)
+            source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
+
+            self.bot.loop.call_soon_threadsafe(self.run_play, source)
+
         self.bot.loop.create_task(self.set_status())
-        print("Playing2: ", self.current_song)
-        stream = self.current_song.stream_url
-        print("Playing3: ", self.current_song)
-        head = requests.head(stream, allow_redirects=True) # removed den scheiß currentsog aus irgendeinem grund
-        print("Playing4: ", self.current_song)
-        if head.status_code == 403:
-            print("reloaded URL")
-            self.current_song = self.getter.reload_stream_url(self.current_song)
-            print("Playing4: ", self.current_song)
-        print("Playing5: ", self.current_song)
-        source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
-        threading.Thread(target=self.run_play(source)).start() # thread im thread
+        threading.Thread(target=background_work).start()
 
 
     def get_voice_client_on_reload(self):
@@ -366,7 +380,7 @@ class Manager(Cog):
             raise DifferentVoiceChannelException()
 
         if self.is_playing():
-            await interaction.response.send_message(f"Es wird gespielt: {self.current_song.name}")
+            await interaction.response.send_message(f"Es wird gespielt: {self.current_song.name}:{self.current_song.duration}\n{self.current_song.url}")
         else:
             await interaction.response.send_message("Ich spiele nichts")
 
