@@ -30,7 +30,7 @@ ydl_opts = {
     }],
     'outtmpl': '%(title)s.%(ext)s',
     'restrictfilenames': True,
-    'noplaylist': True,
+    'noplaylist': True
 }
 
 ffmpeg_before_options = (
@@ -146,7 +146,7 @@ class Getter:
         else:
             return self.fetch_from_url(url)
 
-    async def reload_stream_url(self, song: Song) -> Song:
+    def reload_stream_url(self, song: Song) -> Song:
         s: Song = song
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(song.url, download=False)
@@ -217,7 +217,7 @@ class Manager(Cog):
     def is_connected(self) -> bool:
         return self.voice_client.is_connected()
 
-    async def disconnect(self) -> bool:
+    async def _disconnect(self) -> bool:
         if self.voice_client.is_connected():
             await self.voice_client.disconnect()
             self.voice_client = None
@@ -250,7 +250,7 @@ class Manager(Cog):
 
     def run_play(self, source):
         self.song_playing_since = time.time()
-        self.voice_client.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self._play, e), bitrate=256, signal_type="music")
+        self.voice_client.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self._play), bitrate=256, signal_type="music")
 
     def _play(self, error=None):
         self.song_playing_since = None
@@ -261,19 +261,15 @@ class Manager(Cog):
         if self.current_song is None:
             return
 
-        def background_work():
-            print("Playing1:", self.current_song)
-            stream = self.current_song.stream_url
-            head = requests.head(stream, allow_redirects=True)
-            if head.status_code == 403:
-                print("Reloaded URL")
-                self.current_song = self.getter.reload_stream_url(self.current_song)
-            source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
-
-            self.bot.loop.call_soon_threadsafe(self.run_play, source)
-
+        print("Playing1:", self.current_song)
+        stream = self.current_song.stream_url
+        head = requests.head(stream, allow_redirects=True)
+        if head.status_code == 403:
+            self.current_song = self.getter.reload_stream_url(self.current_song)
+            print("Reloaded URL")
+        source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
         self.bot.loop.create_task(self.set_status())
-        threading.Thread(target=background_work).start()
+        threading.Thread(target=self.run_play, args=(source, )).start()
 
 
     def get_voice_client_on_reload(self):
@@ -302,9 +298,10 @@ class Manager(Cog):
             song: Song = self.getter.get_song_by_name(song)
 
         self.add_to_queue(song)
+        song_name = song.name
         if not self.is_playing():
             self._play()
-        await interaction.followup.send(f"{song.name} zur Warteschlange hinzugefügt")
+        await interaction.followup.send(f"{song_name} zur Warteschlange hinzugefügt")
 
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
@@ -314,8 +311,8 @@ class Manager(Cog):
             raise DifferentVoiceChannelException()
 
         if self.is_playing():
-            await interaction.response.send_message(f"Song geskippt: {self.current_song.name}")
             self.voice_client.stop()
+            await interaction.response.send_message(f"Song geskippt")
             self._play()
         else:
             await interaction.response.send_message("Ich spiele nichts")
@@ -360,7 +357,7 @@ class Manager(Cog):
         if not interaction.user.voice.channel == self.voice_client.channel:
             raise DifferentVoiceChannelException()
 
-        await self.disconnect()
+        await self._disconnect()
 
     @app_commands.command(name="clear", description="Zeige die Warteschlange")
     async def clear(self, interaction: discord.Interaction):
