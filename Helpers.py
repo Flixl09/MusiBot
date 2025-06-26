@@ -35,6 +35,23 @@ ydl_opts = {
     'no_warnings': True
 }
 
+ydl_playlist_opts = {
+    'default_search': 'ytsearch',
+    'format': 'bestaudio/best',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
+    'outtmpl': '%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': False,
+    'extract_flat': True,
+    'quiet': True,
+    'no_warnings': True
+}
+
+
 ffmpeg_before_options = (
     "-reconnect 1 "
     "-reconnect_streamed 1 "
@@ -60,6 +77,10 @@ class BotNotInVoiceException(Exception):
     def __init__(self, msg: str = "Ich bin nicht in einem Voice Channel"):
         super().__init__(msg)
 
+class PlaylistTooLargeException(Exception):
+    def __init__(self, msg: str = "Playlist ist zu groß (Maximum 50 Songs)"):
+        super().__init__(msg)
+
 class Getter:
     def __init__(self):
         self.db: Database = Database()
@@ -67,12 +88,18 @@ class Getter:
         self.sc = self.db.get_or_add_by_name(Platform, "Soundcloud")
         self.yt_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube(?:-nocookie)?\.com|youtu.be))(\/(?:[\w\-]+\?v=|embed\/|live\/|v\/)?)([\w\-]+)(\S+)?$")
         self.sc_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:soundcloud\.com))")
+        
+        self.yt_playlist_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube(?:-nocookie)?\.com|youtu.be)).*[?&]list=([\w\-_]+)")
+        self.sc_playlist_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:soundcloud\.com)).*\/sets\/")
 
     def validate_yt_url(self, url: str) -> bool:
         return self.yt_re.match(url) is not None
 
     def validate_sc_url(self, url: str) -> bool:
         return self.sc_re.match(url) is not None
+    
+    def is_playlist_url(self, url: str) -> bool:
+        return self.validate_yt_playlist_url(url) or self.validate_sc_playlist_url(url)
 
     def log_to_file(self, message: str):
         with open("log.json", "w+") as f:
@@ -124,6 +151,88 @@ class Getter:
             print(f"Error fetching from SoundCloud: {e}")
             raise
         
+    def fetch_playlist_from_url(self, url: str, max_songs: int = 50) -> List[Song]:
+        """Fetch songs from a playlist URL"""
+        try:
+            with YoutubeDL(ydl_playlist_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise Exception("Could not extract playlist information")
+
+                if 'entries' not in info:
+                    raise Exception("URL does not contain a playlist")
+
+                entries = info['entries']
+                if not entries:
+                    raise Exception("Playlist is empty")
+
+                if len(entries) > max_songs:
+                    entries = entries[:max_songs]
+                    print(f"Playlist truncated to {max_songs} songs")
+
+                songs = []
+                platform = self.yt if self.validate_yt_playlist_url(url) else self.sc
+
+                print(f"Processing playlist with {len(entries)} entries...")
+
+                for i, entry in enumerate(entries):
+                    try:
+                        if entry is None:
+                            continue
+
+                        entry_url = entry.get('url') or entry.get('webpage_url')
+                        if not entry_url:
+
+                            if entry.get('id') and platform == self.yt:
+                                entry_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                            else:
+                                continue
+
+                        existing_song = self.db.get_by_url(Song, entry_url)
+                        if existing_song:
+                            songs.append(existing_song)
+                            print(f"Found existing song: {existing_song.name}")
+                            continue
+
+                        with YoutubeDL(ydl_opts) as entry_ydl:
+                            entry_info = entry_ydl.extract_info(entry_url, download=False)
+                            if not entry_info:
+                                continue
+
+                            if platform == self.yt:
+                                artist_name = entry_info.get('channel', 'Unknown')
+                            else:
+                                artist_name = entry_info.get('artist', entry_info.get('uploader', 'Unknown'))
+                            
+                            artist = self.db.get_or_add_by_name(Artist, artist_name)
+
+                            song = Song(
+                                name=entry_info['title'],
+                                url=entry_info['webpage_url'],
+                                duration=entry_info.get('duration', 0),
+                                artists=artist,
+                                stream_url=entry_info['url'],
+                                platforms=platform
+                            )
+                            
+                            self.db.add(Song, song)
+                            songs.append(song)
+                            print(f"Added song {i+1}/{len(entries)}: {song.name}")
+
+                    except Exception as e:
+                        print(f"Error processing playlist entry {i+1}: {e}")
+                        continue
+
+                if not songs:
+                    raise Exception("No valid songs found in playlist")
+
+                print(f"Successfully processed {len(songs)} songs from playlist")
+                return songs
+
+        except Exception as e:
+            print(f"Error fetching playlist from URL {url}: {e}")
+            raise
+        
     def fetch_from_url(self, url: str) -> Song:
         existing_song = self.db.get_by_url(Song, url)
         if existing_song:
@@ -145,9 +254,8 @@ class Getter:
                     artist = self.db.get_or_add_by_name(Artist, info.get('artist', 'Unknown'))
                     platform = self.sc
                 else:
-                    # Generic fallback
                     artist = self.db.get_or_add_by_name(Artist, info.get('uploader', 'Unknown'))
-                    platform = self.yt  # Default to YouTube platform
+                    platform = self.yt  
                 
                 song = Song(
                     name=info['title'], 
@@ -375,20 +483,48 @@ class Manager(Cog):
             if self.voice_client.channel != interaction.user.voice.channel:
                 raise DifferentVoiceChannelException()
 
-            # Get song
-            if validators.url(song):
-                song_obj = self.getter.get_song_by_url(song)
+            #Playlist or Single Song
+            if validators.url(song) and self.getter.is_playlist_url(song):
+                await interaction.followup.send("🎵 Playlist erkannt! Lade Songs...")
+                
+                try:
+                    songs = self.getter.fetch_playlist_from_url(song)
+                    if not songs:
+                        await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
+                        return
+                    
+                    added_count = self.add_songs_to_queue(songs)
+                    
+                    # Start playing if not already playing
+                    if not self.is_playing():
+                        await self._play()
+                    
+                    await interaction.followup.send(
+                        f"✅ **{added_count}** Songs aus der Playlist zur Warteschlange hinzugefügt!\n"
+                        f"Erste Songs: {', '.join([s.name[:30] + '...' if len(s.name) > 30 else s.name for s in songs[:3]])}"
+                        + (f" und {len(songs) - 3} weitere..." if len(songs) > 3 else "")
+                    )
+                    
+                except PlaylistTooLargeException as e:
+                    await interaction.followup.send(f"❌ {str(e)}")
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Fehler beim Laden der Playlist: {str(e)}")
+            
             else:
-                song_obj = self.getter.get_song_by_name(song)
+                #One Song
+                if validators.url(song):
+                    song_obj = self.getter.get_song_by_url(song)
+                else:
+                    song_obj = self.getter.get_song_by_name(song)
 
-            self.add_to_queue(song_obj)
-            song_name = song_obj.name
+                self.add_to_queue(song_obj)
+                song_name = song_obj.name
+                
             
-            # Start playing if not already playing
-            if not self.is_playing():
-                await self._play()
-            
-            await interaction.followup.send(f"**{song_name}** zur Warteschlange hinzugefügt")
+                if not self.is_playing():
+                    await self._play()
+                
+                await interaction.followup.send(f"**{song_name}** zur Warteschlange hinzugefügt")
             
         except Exception as e:
             await interaction.followup.send(f"Fehler: {str(e)}")
