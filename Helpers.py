@@ -20,6 +20,7 @@ from yt_dlp import YoutubeDL
 import validators
 
 
+# Updated yt-dlp options with better error handling
 ydl_opts = {
     'default_search': 'ytsearch',
     'format': 'bestaudio/best',
@@ -32,7 +33,10 @@ ydl_opts = {
     'restrictfilenames': True,
     'noplaylist': True,
     'quiet': True,
-    'no_warnings': True
+    'no_warnings': True,
+    'ignoreerrors': True,
+    'socket_timeout': 60,
+    'retries': 3
 }
 
 ydl_playlist_opts = {
@@ -48,22 +52,30 @@ ydl_playlist_opts = {
     'noplaylist': False,
     'extract_flat': True,
     'quiet': True,
-    'no_warnings': True
+    'no_warnings': True,
+    'ignoreerrors': True,
+    'socket_timeout': 60,
+    'retries': 3
 }
 
-
+# Improved FFmpeg options with better reconnection handling
 ffmpeg_before_options = (
     "-reconnect 1 "
     "-reconnect_streamed 1 "
     "-reconnect_at_eof 1 "
     "-reconnect_delay_max 5 "
-    "-timeout 10000000 "
-    "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'"
+    "-timeout 30000000 "
+    "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' "
+    "-headers 'Accept-Language: en-US,en;q=0.9' "
+    "-multiple_requests 1 "
+    "-seekable 0"
 )
+
 ffmpeg_options = {
-    'options': '-vn -bufsize 1024k',
+    'options': '-vn -bufsize 2048k -maxrate 128k',
     'before_options': ffmpeg_before_options
 }
+
 
 class UserNotInVoiceException(Exception):
     def __init__(self, msg: str = "Du bist in keinem Voice Channel"):
@@ -555,7 +567,7 @@ class Manager(Cog):
                 await self.bot.change_presence(activity=discord.Game(name="Nix"))
         except Exception as e:
             print(f"Error setting status: {e}")
-
+            
     async def _play(self, error=None):
         async with self.play_lock:
             self.song_playing_since = None
@@ -564,6 +576,11 @@ class Manager(Cog):
             if error:
                 print(f"Error playing song: {error}")
 
+            # Check if we're still connected
+            if not self.voice_client or not self.voice_client.is_connected():
+                print("Voice client not connected, stopping playback")
+                return
+
             self.next()
             if self.current_song is None:
                 await self.set_status()
@@ -571,33 +588,60 @@ class Manager(Cog):
 
             print(f"Playing: {self.current_song.name}")
             
-            try:
-                stream = self.current_song.stream_url
-                head = requests.head(stream, allow_redirects=True, timeout=10)
-                if head.status_code == 403:
-                    print("Stream URL expired, reloading...")
-                    self.current_song = self.getter.reload_stream_url(self.current_song)
-                
-                
-                source = discord.FFmpegPCMAudio(self.current_song.stream_url, **ffmpeg_options)
-                
-                await self.set_status()
-                
-            
-                self.song_playing_since = time.time()
-                self.is_playing_flag = True
-                
-            
-                def after_playing(err):
-                    if err:
-                        print(f"Player error: {err}")
-                    asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
-                
-                self.voice_client.play(source, after=after_playing)
-                
-            except Exception as e:
-                print(f"Error in _play: {e}")
-                asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
+            # Try to play the song with retry mechanism
+            for attempt in range(3):
+                try:
+                    # Check stream URL validity
+                    stream_url = self.current_song.stream_url
+                    
+                    # Test if stream URL is still valid
+                    try:
+                        head = requests.head(stream_url, allow_redirects=True, timeout=10)
+                        if head.status_code == 403 or head.status_code >= 400:
+                            print(f"Stream URL invalid (status {head.status_code}), reloading...")
+                            self.current_song = self.getter.reload_stream_url(self.current_song)
+                            stream_url = self.current_song.stream_url
+                    except requests.RequestException as e:
+                        print(f"Error checking stream URL, reloading: {e}")
+                        self.current_song = self.getter.reload_stream_url(self.current_song)
+                        stream_url = self.current_song.stream_url
+                    
+                    # Create audio source
+                    source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+                    
+                    # Check if still connected before playing
+                    if not self.voice_client.is_connected():
+                        print("Lost connection while preparing to play")
+                        return
+                    
+                    await self.set_status()
+                    
+                    self.song_playing_since = time.time()
+                    self.is_playing_flag = True
+                    self.reconnect_attempts = 0  # Reset reconnect attempts on successful play
+                    
+                    def after_playing(err):
+                        if err:
+                            print(f"Player error: {err}")
+                        # Check if we're still connected before continuing
+                        if self.voice_client and self.voice_client.is_connected():
+                            asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
+                        else:
+                            print("Not connected after song finished, stopping playback")
+                    
+                    self.voice_client.play(source, after=after_playing)
+                    return  # Successfully started playing
+                    
+                except Exception as e:
+                    print(f"Error in _play attempt {attempt + 1}: {e}")
+                    if attempt == 2:  # Last attempt
+                        print("All play attempts failed, trying next song")
+                        if self.queue:
+                            asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
+                        return
+                    
+                    # Wait before retry
+                    await asyncio.sleep(2)
 
 
     def get_voice_client_on_reload(self):
@@ -610,6 +654,17 @@ class Manager(Cog):
             dummy_song = self.getter.db.get_dummy(Song)
             if dummy_song:
                 self.current_song = dummy_song
+                
+    # Event handlers for voice connection issues
+    @Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member == self.bot.user:
+            if before.channel and not after.channel:
+                print("Bot was disconnected from voice channel")
+                self.voice_client = None
+                self.current_song = None
+                self.queue.clear()
+                await self.set_status()
 
 
     @app_commands.command(name="play", description="Play a song")
