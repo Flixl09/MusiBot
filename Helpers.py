@@ -535,6 +535,83 @@ class Manager(Cog):
         except Exception as e:
             await interaction.followup.send(f"Fehler: {str(e)}")
             
+            
+    @app_commands.command(name="playlist", description="Add a playlist to the queue")
+    @app_commands.describe(
+        url="Playlist URL (YouTube or SoundCloud)",
+        max_songs="Maximum number of songs to add (default: 50)"
+    )
+    async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 50):
+        await interaction.response.defer()
+        
+        try:
+            if not interaction.user.voice:
+                raise UserNotInVoiceException()
+            
+            if not self.voice_client:
+                await self.connect_to_channel(interaction.user.voice.channel)
+            
+            if self.voice_client.channel != interaction.user.voice.channel:
+                raise DifferentVoiceChannelException()
+
+            if not validators.url(url):
+                await interaction.followup.send("❌ Bitte gib eine gültige URL ein")
+                return
+
+            if not self.getter.is_playlist_url(url):
+                await interaction.followup.send("❌ Die URL ist keine gültige Playlist")
+                return
+
+            # Limit max_songs
+            max_songs = min(max_songs, 100)  # Hard limit of 100 songs
+            
+            await interaction.followup.send(f"🎵 Lade Playlist... (max. {max_songs} Songs)")
+            
+            songs = self.getter.fetch_playlist_from_url(url, max_songs)
+            if not songs:
+                await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
+                return
+            
+            added_count = self.add_songs_to_queue(songs)
+            
+            # Start playing if not already playing
+            if not self.is_playing():
+                await self._play()
+            
+            # Create embed with playlist info
+            embed = Embed(
+                title="🎵 Playlist hinzugefügt",
+                description=f"**{added_count}** Songs zur Warteschlange hinzugefügt",
+                color=0x00FF00
+            )
+            
+            # Show first few songs
+            song_list = []
+            for i, song in enumerate(songs[:5]):
+                duration_str = str(timedelta(seconds=int(song.duration))) if song.duration else "?"
+                song_list.append(f"`{i+1}.` {song.name[:40]}{'...' if len(song.name) > 40 else ''} ({duration_str})")
+            
+            if song_list:
+                embed.add_field(
+                    name="Songs",
+                    value="\n".join(song_list) + (f"\n... und {len(songs) - 5} weitere" if len(songs) > 5 else ""),
+                    inline=False
+                )
+            
+            total_duration = sum(song.duration for song in songs if song.duration)
+            if total_duration:
+                embed.add_field(
+                    name="Gesamtdauer",
+                    value=str(timedelta(seconds=int(total_duration))),
+                    inline=True
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Fehler: {str(e)}")
+            
+    
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
         try:
