@@ -98,6 +98,12 @@ class Getter:
     def validate_sc_url(self, url: str) -> bool:
         return self.sc_re.match(url) is not None
     
+    def validate_yt_playlist_url(self, url: str) -> bool:
+        return self.yt_playlist_re.match(url) is not None
+
+    def validate_sc_playlist_url(self, url: str) -> bool:
+        return self.sc_playlist_re.match(url) is not None
+
     def is_playlist_url(self, url: str) -> bool:
         return self.validate_yt_playlist_url(url) or self.validate_sc_playlist_url(url)
 
