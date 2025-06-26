@@ -189,22 +189,99 @@ class Getter:
     def fetch_playlist_from_url(self, url: str, max_songs: int = 50) -> List[Song]:
         """Fetch songs from a playlist URL"""
         try:
-            # First, extract playlist info with flat extraction to get the list
-            with YoutubeDL(ydl_playlist_opts) as ydl:
-                playlist_info = ydl.extract_info(url, download=False)
+            # Updated yt-dlp options for playlist extraction
+            playlist_opts = {
+                'format': 'bestaudio/best',
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'outtmpl': '%(title)s.%(ext)s',
+                'restrictfilenames': True,
+                'noplaylist': False,  # Important: Allow playlist extraction
+                'extract_flat': True,  # Get metadata without downloading
+                'quiet': True,
+                'no_warnings': True,
+                'ignoreerrors': True,  # Continue on errors
+                'playlistend': max_songs,  # Limit playlist size
+            }
+
+            print(f"Attempting to extract playlist from: {url}")
+            
+            # Extract playlist info
+            with YoutubeDL(playlist_opts) as ydl:
+                try:
+                    playlist_info = ydl.extract_info(url, download=False)
+                except Exception as e:
+                    print(f"Initial extraction failed: {e}")
+                    # Try without extract_flat for problematic playlists
+                    playlist_opts['extract_flat'] = False
+                    playlist_info = ydl.extract_info(url, download=False)
+
                 if not playlist_info:
                     raise Exception("Could not extract playlist information")
 
-                if 'entries' not in playlist_info:
-                    raise Exception("URL does not contain a playlist")
-
-                entries = playlist_info.get('entries', [])
-                if not entries:
-                    raise Exception("Playlist is empty")
-
-                # Filter out None entries
-                entries = [entry for entry in entries if entry is not None]
+                print(f"Playlist info keys: {playlist_info.keys()}")
                 
+                # Handle different playlist structures
+                entries = []
+                
+                # Check if it's a direct playlist
+                if 'entries' in playlist_info and playlist_info['entries']:
+                    entries = playlist_info['entries']
+                    print(f"Found {len(entries)} entries in playlist")
+                
+                # Check if it's a single video that's part of a playlist
+                elif 'playlist' in playlist_info and playlist_info.get('playlist'):
+                    # Try to get the full playlist
+                    playlist_id = None
+                    parsed_url = urlparse(url)
+                    query_params = parse_qs(parsed_url.query)
+                    
+                    if 'list' in query_params:
+                        playlist_id = query_params['list'][0]
+                        playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+                        print(f"Extracting full playlist: {playlist_url}")
+                        
+                        # Extract the full playlist
+                        full_playlist_info = ydl.extract_info(playlist_url, download=False)
+                        if full_playlist_info and 'entries' in full_playlist_info:
+                            entries = full_playlist_info['entries']
+                            print(f"Found {len(entries)} entries in full playlist")
+                
+                # If still no entries, try alternative approach
+                if not entries:
+                    print("No entries found, trying alternative extraction...")
+                    
+                    # Parse playlist ID from URL
+                    parsed_url = urlparse(url)
+                    query_params = parse_qs(parsed_url.query)
+                    
+                    if 'list' in query_params:
+                        playlist_id = query_params['list'][0]
+                        
+                        # Try different playlist URL formats
+                        playlist_urls = [
+                            f"https://www.youtube.com/playlist?list={playlist_id}",
+                            f"https://youtube.com/playlist?list={playlist_id}",
+                            f"https://www.youtube.com/watch?list={playlist_id}",
+                        ]
+                        
+                        for playlist_url in playlist_urls:
+                            try:
+                                print(f"Trying playlist URL: {playlist_url}")
+                                alt_info = ydl.extract_info(playlist_url, download=False)
+                                if alt_info and 'entries' in alt_info and alt_info['entries']:
+                                    entries = alt_info['entries']
+                                    print(f"Success! Found {len(entries)} entries")
+                                    break
+                            except Exception as e:
+                                print(f"Failed with URL {playlist_url}: {e}")
+                                continue
+
+                if not entries:
+                    raise Exception("No playlist entries found. This might be a single video or an invalid playlist.")
+
+                # Filter out None entries and limit count
+                entries = [entry for entry in entries if entry is not None]
                 if len(entries) > max_songs:
                     entries = entries[:max_songs]
                     print(f"Playlist truncated to {max_songs} songs")
@@ -212,67 +289,80 @@ class Getter:
                 songs = []
                 platform = self.yt if self.validate_yt_playlist_url(url) else self.sc
 
-                print(f"Processing playlist with {len(entries)} entries...")
+                print(f"Processing {len(entries)} playlist entries...")
 
-                # Now process each entry individually with full extraction
+                # Process each entry
                 for i, entry in enumerate(entries):
                     try:
                         if entry is None:
+                            print(f"Skipping entry {i+1}: Entry is None")
                             continue
 
-                        # Get the URL for this entry
-                        entry_url = None
+                        # Get video URL
+                        video_url = None
                         if entry.get('webpage_url'):
-                            entry_url = entry['webpage_url']
+                            video_url = entry['webpage_url']
                         elif entry.get('url'):
-                            entry_url = entry['url']
+                            video_url = entry['url']
                         elif entry.get('id') and platform == self.yt:
-                            entry_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                            video_url = f"https://www.youtube.com/watch?v={entry['id']}"
                         else:
                             print(f"Skipping entry {i+1}: No valid URL found")
                             continue
 
-                        # Check if song already exists in database
-                        existing_song = self.db.get_by_url(Song, entry_url)
+                        # Check if song already exists
+                        existing_song = self.db.get_by_url(Song, video_url)
                         if existing_song:
                             songs.append(existing_song)
-                            print(f"Found existing song: {existing_song.name}")
+                            print(f"Found existing song {i+1}/{len(entries)}: {existing_song.name}")
                             continue
 
-                        # Extract full info for this individual song
-                        with YoutubeDL(ydl_opts) as entry_ydl:
-                            entry_info = entry_ydl.extract_info(entry_url, download=False)
-                            if not entry_info:
-                                print(f"Skipping entry {i+1}: Could not extract info")
-                                continue
-
-                            # Determine artist name based on platform
-                            if platform == self.yt:
-                                artist_name = entry_info.get('channel', entry_info.get('uploader', 'Unknown'))
-                            else:  # SoundCloud
-                                artist_name = entry_info.get('artist', entry_info.get('uploader', 'Unknown'))
+                        # For flat extraction, we need to get full info
+                        if playlist_opts.get('extract_flat', False):
+                            # Extract full info for this video
+                            single_opts = {
+                                'format': 'bestaudio/best',
+                                'quiet': True,
+                                'no_warnings': True,
+                            }
                             
-                            artist = self.db.get_or_add_by_name(Artist, artist_name)
+                            with YoutubeDL(single_opts) as single_ydl:
+                                video_info = single_ydl.extract_info(video_url, download=False)
+                        else:
+                            video_info = entry
 
-                            song = Song(
-                                name=entry_info['title'],
-                                url=entry_info['webpage_url'],
-                                duration=entry_info.get('duration', 0),
-                                artists=artist,
-                                stream_url=entry_info['url'],
-                                platforms=platform
-                            )
-                            
-                            self.db.add(Song, song)
-                            songs.append(song)
-                            print(f"Added song {i+1}/{len(entries)}: {song.name}")
+                        if not video_info:
+                            print(f"Skipping entry {i+1}: Could not extract video info")
+                            continue
+
+                        # Get artist name
+                        if platform == self.yt:
+                            artist_name = video_info.get('channel', video_info.get('uploader', 'Unknown'))
+                        else:
+                            artist_name = video_info.get('artist', video_info.get('uploader', 'Unknown'))
+                        
+                        artist = self.db.get_or_add_by_name(Artist, artist_name)
+
+                        # Create song object
+                        song = Song(
+                            name=video_info.get('title', f'Unknown Song {i+1}'),
+                            url=video_info.get('webpage_url', video_url),
+                            duration=video_info.get('duration', 0),
+                            artists=artist,
+                            stream_url=video_info.get('url', ''),
+                            platforms=platform
+                        )
+                        
+                        self.db.add(Song, song)
+                        songs.append(song)
+                        print(f"Added song {i+1}/{len(entries)}: {song.name}")
 
                     except Exception as e:
                         print(f"Error processing playlist entry {i+1}: {e}")
                         continue
 
                 if not songs:
-                    raise Exception("No valid songs found in playlist")
+                    raise Exception("No valid songs could be extracted from the playlist")
 
                 print(f"Successfully processed {len(songs)} songs from playlist")
                 return songs
