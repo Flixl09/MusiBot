@@ -89,7 +89,7 @@ class Getter:
         self.yt_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube(?:-nocookie)?\.com|youtu.be))(\/(?:[\w\-]+\?v=|embed\/|live\/|v\/)?)([\w\-]+)(\S+)?$")
         self.sc_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:soundcloud\.com))")
         
-        self.yt_playlist_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube(?:-nocookie)?\.com|youtu.be)).*[?&]list=([\w\-_]+)")
+        self.yt_playlist_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:youtube(?:-nocookie)?\.com|youtu.be)).*[?&]list=([\w\-_]+)(&.*)?$")
         self.sc_playlist_re = re.compile(r"^((?:https?:)?\/\/)?((?:www|m)\.)?((?:soundcloud\.com)).*\/sets\/")
 
     def validate_yt_url(self, url: str) -> bool:
@@ -99,11 +99,40 @@ class Getter:
         return self.sc_re.match(url) is not None
     
     def validate_yt_playlist_url(self, url: str) -> bool:
-        return self.yt_playlist_re.match(url) is not None
+        """Enhanced YouTube playlist URL validation using URL parsing"""
+        try:
+            parsed_url = urlparse(url)
+            query_params = parse_qs(parsed_url.query)
+            
+            
+            youtube_domains = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtube-nocookie.com']
+            is_youtube = any(domain in parsed_url.netloc.lower() for domain in youtube_domains)
+            
+            
+            if 'youtu.be' in parsed_url.netloc.lower():
+                is_youtube = True
+            
+           
+            has_list = 'list' in query_params and query_params['list'][0]
+            
+            return is_youtube and has_list
+        except Exception as e:
+            print(f"Error validating YouTube playlist URL: {e}")
+            return self.yt_playlist_re.match(url) is not None
 
+    
     def validate_sc_playlist_url(self, url: str) -> bool:
-        return self.sc_playlist_re.match(url) is not None
-
+        """Enhanced SoundCloud playlist URL validation"""
+        try:
+            parsed_url = urlparse(url)
+            is_soundcloud = 'soundcloud.com' in parsed_url.netloc.lower()
+            has_sets = '/sets/' in parsed_url.path
+            return is_soundcloud and has_sets
+        except Exception as e:
+            print(f"Error validating SoundCloud playlist URL: {e}")
+            
+            return self.sc_playlist_re.match(url) is not None
+        
     def is_playlist_url(self, url: str) -> bool:
         return self.validate_yt_playlist_url(url) or self.validate_sc_playlist_url(url)
 
