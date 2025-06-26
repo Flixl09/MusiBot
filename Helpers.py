@@ -352,6 +352,12 @@ class Manager(Cog):
     def add_to_queue(self, song: Song) -> bool:
         self.queue.append(song)
         return True
+    
+    def add_songs_to_queue(self, songs: List[Song]) -> int:
+        """Add multiple songs to queue and return count"""
+        for song in songs:
+            self.queue.append(song)
+        return len(songs)
 
     def remove_from_queue(self, song: Song) -> bool:
         if song in self.queue:
