@@ -72,8 +72,9 @@ ffmpeg_before_options = (
 )
 
 ffmpeg_options = {
-    'options': '-vn -bufsize 2048k -maxrate 128k',
-    'before_options': ffmpeg_before_options
+    'options': '-vn -bufsize 4096k -maxrate 512k',
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn -use_wallclock_as_timestamps 1"
 }
 
 
@@ -583,8 +584,14 @@ class Manager(Cog):
 
             self.next()
             if self.current_song is None:
+                print("Queue leer – nichts mehr zu spielen.")
                 await self.set_status()
+                try:
+                    await self.voice_client.disconnect()
+                except Exception as e:
+                    print(f"Fehler beim Trennen vom Voice-Channel: {e}")
                 return
+
 
             print(f"Playing: {self.current_song.name}")
             
@@ -621,6 +628,7 @@ class Manager(Cog):
                     self.reconnect_attempts = 0  # Reset reconnect attempts on successful play
                     
                     def after_playing(err):
+                        print("after_playing wurde aufgerufen.")
                         if err:
                             print(f"Player error: {err}")
                         # Check if we're still connected before continuing
