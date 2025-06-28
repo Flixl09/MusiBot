@@ -215,7 +215,7 @@ class Getter:
             print(f"Error fetching from SoundCloud: {e}")
             raise
         
-    def fetch_playlist_from_url(self, url: str, max_songs: int = 100) -> List[Song]:
+    def fetch_playlist_from_url(self, url: str, max_songs: int = 50) -> List[Song]:
         """Fetch songs from a playlist URL"""
         try:
             # Updated yt-dlp options for playlist extraction
@@ -402,6 +402,119 @@ class Getter:
 
         except Exception as e:
             print(f"Error fetching playlist from URL {url}: {e}")
+            raise
+        
+    async def fetch_and_stream_playlist(self, url: str, max_songs: int = 50) -> AsyncGenerator[
+        Tuple[Optional['Song'], List['Song'], int], None]:
+        """Fetch playlist songs and yield them as they're processed (first immediately)"""
+        try:
+            playlist_opts = {
+                'format': 'bestaudio/best',
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'outtmpl': '%(title)s.%(ext)s',
+                'restrictfilenames': True,
+                'noplaylist': False,
+                'extract_flat': True,
+                'quiet': True,
+                'no_warnings': True,
+                'ignoreerrors': True,
+                'playlistend': max_songs,
+                'playliststart': 1,
+            }
+
+            print(f"[stream] Attempting to extract playlist from: {url}")
+
+            with YoutubeDL(playlist_opts) as ydl:
+                try:
+                    playlist_info = ydl.extract_info(url, download=False)
+                except Exception as e:
+                    print(f"[stream] Initial extraction failed: {e}")
+                    playlist_opts['extract_flat'] = False
+                    playlist_info = ydl.extract_info(url, download=False)
+
+                if not playlist_info:
+                    raise Exception("No playlist info found")
+
+                entries = []
+                if 'entries' in playlist_info:
+                    entries = playlist_info['entries']
+                elif 'playlist' in playlist_info:
+                    parsed = urlparse(url)
+                    q = parse_qs(parsed.query)
+                    if 'list' in q:
+                        list_id = q['list'][0]
+                        playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
+                        print(f"[stream] Trying full playlist: {playlist_url}")
+                        playlist_info = ydl.extract_info(playlist_url, download=False)
+                        entries = playlist_info.get('entries', [])
+
+                entries = [e for e in entries if e is not None]
+                if len(entries) > max_songs:
+                    entries = entries[:max_songs]
+
+                platform = self.yt if self.validate_yt_playlist_url(url) else self.sc
+                processed_songs = []
+
+                for i, entry in enumerate(entries):
+                    try:
+                        video_url = (
+                            entry.get('webpage_url')
+                            or entry.get('url')
+                            or (f"https://www.youtube.com/watch?v={entry['id']}" if platform == self.yt else None)
+                        )
+                        if not video_url:
+                            print(f"[stream] Skipping {i+1}: No valid URL")
+                            continue
+
+                        existing_song = self.db.get_by_url(Song, video_url)
+                        if existing_song:
+                            processed_songs.append(existing_song)
+                            if i == 0:
+                                yield existing_song, processed_songs, len(entries)
+                            continue
+
+                        if playlist_opts.get('extract_flat', False):
+                            with YoutubeDL({'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True}) as single_ydl:
+                                video_info = single_ydl.extract_info(video_url, download=False)
+                        else:
+                            video_info = entry
+
+                        if not video_info:
+                            print(f"[stream] Skipping {i+1}: No video info")
+                            continue
+
+                        artist_name = (
+                            video_info.get('channel') if platform == self.yt
+                            else video_info.get('artist', video_info.get('uploader', 'Unknown'))
+                        )
+                        artist = self.db.get_or_add_by_name(Artist, artist_name)
+
+                        song = Song(
+                            name=video_info.get('title', f'Unknown Song {i+1}'),
+                            url=video_info.get('webpage_url', video_url),
+                            duration=video_info.get('duration', 0),
+                            artists=artist,
+                            stream_url=video_info.get('url', ''),
+                            platforms=platform
+                        )
+
+                        self.db.add(Song, song)
+                        processed_songs.append(song)
+
+                        if i == 0:
+                            yield song, processed_songs, len(entries)  # first song for playback
+
+                        print(f"[stream] Processed song {i+1}/{len(entries)}: {song.name}")
+
+                    except Exception as e:
+                        print(f"[stream] Error processing song {i+1}: {e}")
+                        continue
+
+                yield None, processed_songs, len(entries)  # Final result
+
+        except Exception as e:
+            print(f"[stream] Failed to stream playlist from {url}: {e}")
             raise
         
     def fetch_from_url(self, url: str) -> Song:
@@ -721,31 +834,55 @@ class Manager(Cog):
                 raise DifferentVoiceChannelException()
 
             if validators.url(song) and self.getter.is_playlist_url(song):
-                await interaction.followup.send("🎵 Playlist erkannt! Lade Songs...")
-                
+                await interaction.followup.send("🎵 Playlist erkannt! Lade ersten Song...")
+
                 try:
-                    MAX_PLAYLIST_SONGS = 100
-                    songs = self.getter.fetch_playlist_from_url(song,MAX_PLAYLIST_SONGS)
-                    if not songs:
+                    MAX_PLAYLIST_SONGS_PLAY = 100
+                    playlist_stream = self.getter.fetch_and_stream_playlist(song, MAX_PLAYLIST_SONGS_PLAY)
+
+                    first_song = None
+                    all_songs = []
+                    total_expected = 0
+
+                    async for result in playlist_stream:
+                        if result is None:
+                            break
+
+                        current_song, songs_so_far, expected_total = result
+
+                        if current_song and not first_song:
+                            first_song = current_song
+                            total_expected = expected_total
+
+                            self.add_to_queue(first_song)
+
+                            if not self.is_playing():
+                                await self._play()
+
+                            await interaction.followup.send(
+                                f"▶️ **Spielt jetzt:** {first_song.name}\n"
+                                f"🎵 Lade weitere Songs aus Playlist... (0/{expected_total} geladen)"
+                            )
+
+                        all_songs = songs_so_far
+
+                    if len(all_songs) > 1:
+                        remaining_songs = all_songs[1:]
+                        added_count = self.add_songs_to_queue(remaining_songs)
+
+                        await interaction.followup.send(
+                            f"✅ **{len(all_songs)}** Songs aus der Playlist geladen!\n"
+                            f"Bereits gespielt: {first_song.name}\n"
+                            f"In Warteschlange: {added_count} Songs"
+                        )
+                    elif len(all_songs) == 1:
+                        await interaction.followup.send(f"✅ Playlist mit 1 Song geladen: {first_song.name}")
+                    else:
                         await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
-                        return
-                    
-                    added_count = self.add_songs_to_queue(songs)
-                    
-                    if not self.is_playing():
-                        await self._play()
-                    
-                    await interaction.followup.send(
-                        f"✅ **{added_count}** Songs aus der Playlist zur Warteschlange hinzugefügt!\n"
-                        f"Erste Songs: {', '.join([s.name[:30] + '...' if len(s.name) > 30 else s.name for s in songs[:3]])}"
-                        + (f" und {len(songs) - 3} weitere..." if len(songs) > 3 else "")
-                    )
-                    
-                except PlaylistTooLargeException as e:
-                    await interaction.followup.send(f"❌ {str(e)}")
+
                 except Exception as e:
                     await interaction.followup.send(f"❌ Fehler beim Laden der Playlist: {str(e)}")
-            
+
             else:
                 if validators.url(song):
                     song_obj = self.getter.get_song_by_url(song)
@@ -753,22 +890,21 @@ class Manager(Cog):
                     song_obj = self.getter.get_song_by_name(song)
 
                 self.add_to_queue(song_obj)
-                song_name = song_obj.name
-                
-            
+
                 if not self.is_playing():
                     await self._play()
-                
-                await interaction.followup.send(f"**{song_name}** zur Warteschlange hinzugefügt")
-            
+
+                await interaction.followup.send(f"**{song_obj.name}** zur Warteschlange hinzugefügt")
+
         except Exception as e:
             await interaction.followup.send(f"Fehler: {str(e)}")
+
             
             
     @app_commands.command(name="playlist", description="Add a playlist to the queue")
     @app_commands.describe(
         url="Playlist URL (YouTube or SoundCloud)",
-        max_songs="Maximum number of songs to add (default: 50, max: 100)"
+        max_songs="Maximum number of songs to add (default: 50, max: 200)"
     )
     async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 50):
         await interaction.response.defer()
@@ -791,55 +927,81 @@ class Manager(Cog):
                 await interaction.followup.send("❌ Die URL ist keine gültige Playlist")
                 return
 
-            # Limit max_songs
-            max_songs = max(1,min(max_songs, 200))  
-            
-            await interaction.followup.send(f"🎵 Lade Playlist... (max. {max_songs} Songs)")
-            
-            songs = self.getter.fetch_playlist_from_url(url, max_songs)
-            if not songs:
-                await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
-                return
-            
-            added_count = self.add_songs_to_queue(songs)
-            
-            # Start playing if not already playing
-            if not self.is_playing():
-                await self._play()
-            
-            # Create embed with playlist info
-            embed = Embed(
-                title="🎵 Playlist hinzugefügt",
-                description=f"**{added_count}** Songs zur Warteschlange hinzugefügt",
-                color=0x00FF00
-            )
-            
-            # Show first few songs
-            song_list = []
-            for i, song in enumerate(songs[:5]):
-                duration_str = str(timedelta(seconds=int(song.duration))) if song.duration else "?"
-                song_list.append(f"`{i+1}.` {song.name[:40]}{'...' if len(song.name) > 40 else ''} ({duration_str})")
-            
-            if song_list:
+            max_songs = max(1, min(max_songs, 200))  
+
+            await interaction.followup.send(f"🎵 Playlist erkannt – lade Songs (max. {max_songs})...")
+
+            playlist_stream = self.getter.fetch_and_stream_playlist(url, max_songs)
+
+            first_song = None
+            all_songs = []
+
+            async for result in playlist_stream:
+                if result is None:
+                    break
+
+                current_song, songs_so_far, expected_total = result
+
+                if current_song and not first_song:
+                    first_song = current_song
+                    self.add_to_queue(first_song)
+
+                    if not self.is_playing():
+                        await self._play()
+
+                    await interaction.followup.send(
+                        f"▶️ **Spielt jetzt:** {first_song.name}\n"
+                        f"🎵 Lade weitere {expected_total - 1} Songs..."
+                    )
+
+                all_songs = songs_so_far
+
+            if len(all_songs) > 1:
+                remaining_songs = all_songs[1:]
+                added_count = self.add_songs_to_queue(remaining_songs)
+
+                embed = Embed(
+                    title="🎶 Playlist hinzugefügt",
+                    description=f"**{len(all_songs)}** Songs wurden der Warteschlange hinzugefügt",
+                    color=0x00FF00
+                )
+
                 embed.add_field(
-                    name="Songs",
-                    value="\n".join(song_list) + (f"\n... und {len(songs) - 5} weitere" if len(songs) > 5 else ""),
+                    name="Spielt jetzt",
+                    value=first_song.name[:50] + ('...' if len(first_song.name) > 50 else ''),
                     inline=False
                 )
-            
-            total_duration = sum(song.duration for song in songs if song.duration)
-            if total_duration:
-                embed.add_field(
-                    name="Gesamtdauer",
-                    value=str(timedelta(seconds=int(total_duration))),
-                    inline=True
-                )
-            
-            await interaction.followup.send(embed=embed)
-            
+
+                next_songs = []
+                for i, song in enumerate(remaining_songs[:4]):
+                    duration_str = str(timedelta(seconds=int(song.duration))) if song.duration else "?"
+                    next_songs.append(f"`{i+2}.` {song.name[:35]}{'...' if len(song.name) > 35 else ''} ({duration_str})")
+
+                if next_songs:
+                    embed.add_field(
+                        name="Nächste Songs",
+                        value="\n".join(next_songs) + (f"\n... und {len(remaining_songs) - 4} weitere" if len(remaining_songs) > 4 else ""),
+                        inline=False
+                    )
+
+                total_duration = sum(song.duration for song in all_songs if song.duration)
+                if total_duration:
+                    embed.add_field(
+                        name="Gesamtdauer",
+                        value=str(timedelta(seconds=int(total_duration))),
+                        inline=True
+                    )
+
+                await interaction.followup.send(embed=embed)
+
+            elif len(all_songs) == 1:
+                await interaction.followup.send(f"✅ Playlist mit 1 Song geladen: {first_song.name}")
+            else:
+                await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
+
         except Exception as e:
             await interaction.followup.send(f"❌ Fehler: {str(e)}")
-            
+
     @app_commands.command(name="pause", description="Pause or resume the current song")
     async def pause(self, interaction: discord.Interaction):
         try:
