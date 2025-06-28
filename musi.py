@@ -1,9 +1,9 @@
 import discord
 import validators
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 from discord.ext.commands import Bot, Cog, check, is_owner, guild_only, Context
-from datetime import datetime
+
 from Helpers import Manager
 
 bot = Bot(command_prefix="-", intents=discord.Intents.all(), help_command=None,owner_id=707656939869306973,
@@ -37,14 +37,6 @@ async def on_ready():
 async def globally_block_dms(ctx: Context):
     return ctx.guild is not None
 
-@tasks.loop(datetime.time(hour=16, tzinfo=datetime.timezone.cet) )
-async def daily_notification():
-    channel = bot.get_channel(915698141381165066)
-    if channel:
-        await channel.send("📢 Guten Morgen! Hier ist deine tägliche Nachricht. 🌞")
-    else:
-        print("Channel nicht gefunden!")
-        
 @bot.command(name="sync")
 @commands.is_owner()
 async def sync(ctx: Context):
@@ -81,7 +73,7 @@ async def clear_commands(ctx: Context):
     try:
         #guild = discord.Object(id=915698061530001448)
         #bot.tree.clear_commands(guild=guild)
-        #await bot.tree.sync(guild=guild)
+        await bot.tree.sync(guild=guild)
         
         bot.tree.clear_commands(guild=None)
         await bot.tree.sync()
@@ -94,18 +86,18 @@ async def clear_commands(ctx: Context):
 @commands.is_owner()
 async def suicide(ctx: Context):
     try:
-        # Properly remove the cog first
         await bot.remove_cog("Manager")
-        
-        # Clear commands to avoid conflicts
-        bot.tree.clear_commands(guild=None)
-        
-        # Re-add the cog
         await bot.add_cog(Manager(bot))
+        guild = discord.Object(id=915698061530001448)
+        await bot.tree.sync(guild=guild)
         
-        # Sync commands
-        synced = await bot.tree.sync()
-        
-        await ctx.send(f"MUSIIIIII REEEELOADDDDEEEEEEEDDDD! {len(synced)} commands registered.")
+        # Check how many commands we have
+        commands = bot.tree.get_commands()
+        await ctx.send(f"MUSIIIIII REEEELOADDDDEEEEEEEDDDD! {len(commands)} commands registered.")
     except Exception as e:
         await ctx.send(f"Reload failed: {e}")
+
+with open("token", "r") as f:
+    token = f.read().strip()
+
+bot.run(token)
