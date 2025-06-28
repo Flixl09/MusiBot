@@ -25,11 +25,13 @@ async def globally_block_dms(ctx: Context):
 @commands.is_owner()
 async def sync(ctx: Context):
     try:
-        # Global sync
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands globally")
+        # Guild-specific sync
+        guild = discord.Object(id=915698061530001448)
+        bot.tree.copy_global_to(guild=guild)
+        synced_guild = await bot.tree.sync(guild=guild)
+        print(f"Synced {len(synced_guild)} commands to guild")
         
-        await ctx.send(f"Synced {len(synced)} commands globally and {len(synced_guild)} to guild!")
+        await ctx.send(f"Synced {len(synced_guild)} to guild!")
     except Exception as e:
         print(f"Sync error: {e}")
         await ctx.send(f"Sync failed: {e}")
