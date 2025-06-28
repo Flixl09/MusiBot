@@ -215,7 +215,7 @@ class Getter:
             print(f"Error fetching from SoundCloud: {e}")
             raise
         
-    def fetch_playlist_from_url(self, url: str, max_songs: int = 50) -> List[Song]:
+    def fetch_playlist_from_url(self, url: str, max_songs: int = 100) -> List[Song]:
         """Fetch songs from a playlist URL"""
         try:
             # Updated yt-dlp options for playlist extraction
@@ -231,6 +231,7 @@ class Getter:
                 'no_warnings': True,
                 'ignoreerrors': True,  # Continue on errors
                 'playlistend': max_songs,  # Limit playlist size
+                'playliststart': 1,
             }
 
             print(f"Attempting to extract playlist from: {url}")
@@ -322,6 +323,9 @@ class Getter:
 
                 # Process each entry
                 for i, entry in enumerate(entries):
+                    if len(songs) >= max_songs:  # Additional safety check
+                        print(f"Reached maximum songs limit ({max_songs}), stopping processing")
+                        break
                     try:
                         if entry is None:
                             print(f"Skipping entry {i+1}: Entry is None")
@@ -720,7 +724,8 @@ class Manager(Cog):
                 await interaction.followup.send("🎵 Playlist erkannt! Lade Songs...")
                 
                 try:
-                    songs = self.getter.fetch_playlist_from_url(song)
+                    MAX_PLAYLIST_SONGS = 100
+                    songs = self.getter.fetch_playlist_from_url(song,MAX_PLAYLIST_SONGS)
                     if not songs:
                         await interaction.followup.send("❌ Keine Songs in der Playlist gefunden")
                         return
@@ -763,9 +768,9 @@ class Manager(Cog):
     @app_commands.command(name="playlist", description="Add a playlist to the queue")
     @app_commands.describe(
         url="Playlist URL (YouTube or SoundCloud)",
-        max_songs="Maximum number of songs to add (default: 100)"
+        max_songs="Maximum number of songs to add (default: 50, max: 100)"
     )
-    async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 100):
+    async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 50):
         await interaction.response.defer()
         
         try:
@@ -787,7 +792,7 @@ class Manager(Cog):
                 return
 
             # Limit max_songs
-            max_songs = min(max_songs, 200)  
+            max_songs = max(1,min(max_songs, 200))  
             
             await interaction.followup.send(f"🎵 Lade Playlist... (max. {max_songs} Songs)")
             
