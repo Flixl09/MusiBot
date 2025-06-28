@@ -17,6 +17,22 @@ async def on_ready():
     print("Bot is ready!")
     await bot.change_presence(activity=discord.Game(name="Ready!"), status=discord.Status.online)
 
+    try:
+        # For testing, sync to your guild first
+        #guild = discord.Object(id=915698061530001448)
+        #synced = await bot.tree.sync(guild=guild)
+        #print(f"Synced {len(synced)} commands to guild {guild.id}")
+        
+        # Then sync globally (optional, takes up to 1 hour)
+        global_synced = await bot.tree.sync()
+        print(f"Synced {len(global_synced)} commands globally")
+        
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+    
+    await bot.change_presence(activity=discord.Game(name="Ready!"), status=discord.Status.online)
+
+
 @bot.check
 async def globally_block_dms(ctx: Context):
     return ctx.guild is not None
@@ -26,25 +42,38 @@ async def globally_block_dms(ctx: Context):
 async def sync(ctx: Context):
     try:
         # Global sync (commands appear in all servers, takes up to 1 hour)
-        # synced = await bot.tree.sync()
-        # await ctx.send(f"Synced {len(synced)} commands globally!")
+        synced_global = await bot.tree.sync()
+        await ctx.send(f"Synced {len(synced_global)} commands globally!")
         
-        guild = discord.Object(id=915698061530001448)
-        synced = await bot.tree.sync(guild=guild)
-        await ctx.send(f"Synced {len(synced)} commands to guild!")
+        # Guild sync (immediate, for testing)
+        #guild = discord.Object(id=915698061530001448)
+        #synced_guild = await bot.tree.sync(guild=guild)
+        #await ctx.send(f"Synced {len(synced_guild)} commands to guild!")
         
     except Exception as e:
         print(f"Sync error: {e}")
         await ctx.send(f"Sync failed: {e}")
+
+
+@bot.command(name="list_commands")
+@commands.is_owner()
+async def list_commands(ctx: Context):
+    """Debug command to see what commands are registered"""
+    commands = bot.tree.get_commands()
+    if commands:
+        command_list = [f"- {cmd.name}: {cmd.description}" for cmd in commands]
+        await ctx.send(f"Registered commands ({len(commands)}):\n```\n" + "\n".join(command_list) + "\n```")
+    else:
+        await ctx.send("No commands registered!")
 
 @bot.command(name="clear_commands")
 @commands.is_owner()
 async def clear_commands(ctx: Context):
     """Clear all slash commands to fix duplicates"""
     try:
-        guild = discord.Object(id=915698061530001448)
-        bot.tree.clear_commands(guild=guild)
-        await bot.tree.sync(guild=guild)
+        #guild = discord.Object(id=915698061530001448)
+        #bot.tree.clear_commands(guild=guild)
+        #await bot.tree.sync(guild=guild)
         
         bot.tree.clear_commands(guild=None)
         await bot.tree.sync()
@@ -61,7 +90,10 @@ async def suicide(ctx: Context):
         await bot.add_cog(Manager(bot))
         guild = discord.Object(id=915698061530001448)
         await bot.tree.sync(guild=guild)
-        await ctx.send("MUSIIIIII REEEELOADDDDEEEEEEEDDDD DAN DAN DANDAN DANDAN DANDANDANDAN DAN DAN")
+        
+        # Check how many commands we have
+        commands = bot.tree.get_commands()
+        await ctx.send(f"MUSIIIIII REEEELOADDDDEEEEEEEDDDD! {len(commands)} commands registered.")
     except Exception as e:
         await ctx.send(f"Reload failed: {e}")
 

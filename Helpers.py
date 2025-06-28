@@ -500,7 +500,6 @@ class Manager(Cog):
         self.previous_song: Song = None  # NEW: Track previous song for rewind
         self.voice_client: VoiceClient = None
         self.getter: Getter = Getter()
-        self.tree = bot.tree
         self.song_playing_since: Optional[float] = None
         self.is_playing_flag: bool = False
         self.is_paused: bool = False  # NEW: Track pause state
@@ -695,6 +694,7 @@ class Manager(Cog):
             dummy_song = self.getter.db.get_dummy(Song)
             if dummy_song:
                 self.current_song = dummy_song
+        print("Manager cog loaded, syncing commands...")
                 
     # Event handlers for voice connection issues
     @Cog.listener()
