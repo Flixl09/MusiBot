@@ -508,7 +508,7 @@ class Manager(Cog):
         self.vote_skip_poll: Optional[VoteSkipPoll] = None  # NEW: Current vote skip poll
 
 
-    def next(self):
+    def next_song(self):
         if len(self.queue) > 0:
             self.previous_song = self.current_song  # NEW: Store previous song
             self.current_song = self.queue.pop(0)
@@ -614,7 +614,7 @@ class Manager(Cog):
                 print("Voice client not connected, stopping playback")
                 return
 
-            self.next()
+            self.next_song()
             if self.current_song is None:
                 print("Queue leer – nichts mehr zu spielen.")
                 await self.set_status()

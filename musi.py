@@ -86,18 +86,18 @@ async def clear_commands(ctx: Context):
 @commands.is_owner()
 async def suicide(ctx: Context):
     try:
+        # Properly remove the cog first
         await bot.remove_cog("Manager")
-        await bot.add_cog(Manager(bot))
-        guild = discord.Object(id=915698061530001448)
-        await bot.tree.sync(guild=guild)
         
-        # Check how many commands we have
-        commands = bot.tree.get_commands()
-        await ctx.send(f"MUSIIIIII REEEELOADDDDEEEEEEEDDDD! {len(commands)} commands registered.")
+        # Clear commands to avoid conflicts
+        bot.tree.clear_commands(guild=None)
+        
+        # Re-add the cog
+        await bot.add_cog(Manager(bot))
+        
+        # Sync commands
+        synced = await bot.tree.sync()
+        
+        await ctx.send(f"MUSIIIIII REEEELOADDDDEEEEEEEDDDD! {len(synced)} commands registered.")
     except Exception as e:
         await ctx.send(f"Reload failed: {e}")
-
-with open("token", "r") as f:
-    token = f.read().strip()
-
-bot.run(token)
