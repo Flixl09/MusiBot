@@ -20,7 +20,6 @@ from yt_dlp import YoutubeDL
 import validators
 
 
-# Updated yt-dlp options with better error handling
 ydl_opts = {
     'default_search': 'ytsearch',
     'format': 'bestaudio/best',
@@ -58,7 +57,6 @@ ydl_playlist_opts = {
     'retries': 3
 }
 
-# Improved FFmpeg options with better reconnection handling
 ffmpeg_before_options = (
     "-reconnect 1 "
     "-reconnect_streamed 1 "
@@ -94,6 +92,24 @@ class PlaylistTooLargeException(Exception):
     def __init__(self, msg: str = "Playlist ist zu groß (Maximum 50 Songs)"):
         super().__init__(msg)
 
+class VoteSkipPoll:
+    def __init__(self, channel_members: int):
+        self.votes_needed = max(2, channel_members // 2)  # At least 2 votes, or half the channel
+        self.voted_users = set()
+        self.created_at = time.time()
+        
+    def add_vote(self, user_id: int) -> bool:
+        """Add a vote and return True if skip threshold is reached"""
+        self.voted_users.add(user_id)
+        return len(self.voted_users) >= self.votes_needed
+        
+    def get_progress(self) -> str:
+        return f"{len(self.voted_users)}/{self.votes_needed}"
+        
+    def is_expired(self, timeout: int = 30) -> bool:
+        """Check if poll has expired (default 30 seconds)"""
+        return time.time() - self.created_at > timeout
+    
 class Getter:
     def __init__(self):
         self.db: Database = Database()
@@ -481,17 +497,24 @@ class Manager(Cog):
         self.bot: Bot = bot
         self.queue: List[Song] = []
         self.current_song: Song = None
+        self.previous_song: Song = None  # NEW: Track previous song for rewind
         self.voice_client: VoiceClient = None
         self.getter: Getter = Getter()
         self.tree = bot.tree
         self.song_playing_since: Optional[float] = None
         self.is_playing_flag: bool = False
+        self.is_paused: bool = False  # NEW: Track pause state
+        self.pause_time: Optional[float] = None  # NEW: Track when paused
         self.play_lock = asyncio.Lock()
+        self.vote_skip_poll: Optional[VoteSkipPoll] = None  # NEW: Current vote skip poll
+
 
     def next(self):
         if len(self.queue) > 0:
+            self.previous_song = self.current_song  # NEW: Store previous song
             self.current_song = self.queue.pop(0)
         else:
+            self.previous_song = self.current_song  # NEW: Store previous song
             self.current_song = None
 
     def add_to_queue(self, song: Song) -> bool:
@@ -536,6 +559,15 @@ class Manager(Cog):
     def is_connected(self) -> bool:
         return self.voice_client and self.voice_client.is_connected()
 
+    # NEW: Method to move song to front of queue
+    def move_to_next(self, song_index: int) -> bool:
+        """Move a song from the queue to be played next"""
+        if 0 <= song_index < len(self.queue):
+            song = self.queue.pop(song_index)
+            self.queue.insert(0, song)
+            return True
+        return False
+    
     async def _disconnect(self) -> bool:
         if self.voice_client.is_connected():
             await self.voice_client.disconnect()
@@ -573,6 +605,7 @@ class Manager(Cog):
         async with self.play_lock:
             self.song_playing_since = None
             self.is_playing_flag = False
+            self.is_paused = False
             
             if error:
                 print(f"Error playing song: {error}")
@@ -671,7 +704,10 @@ class Manager(Cog):
                 print("Bot was disconnected from voice channel")
                 self.voice_client = None
                 self.current_song = None
+                self.previous_song = None  # NEW: Clear previous song
                 self.queue.clear()
+                self.is_paused = False  # NEW: Reset pause state
+                self.vote_skip_poll = None  # NEW: Clear vote skip poll
                 await self.set_status()
 
 
