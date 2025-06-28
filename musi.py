@@ -25,16 +25,33 @@ async def globally_block_dms(ctx: Context):
 @commands.is_owner()
 async def sync(ctx: Context):
     try:
-        # Guild-specific sync
-        guild = discord.Object(id=915698061530001448)
-        bot.tree.copy_global_to(guild=guild)
-        synced_guild = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced_guild)} commands to guild")
+        # Global sync (commands appear in all servers, takes up to 1 hour)
+        # synced = await bot.tree.sync()
+        # await ctx.send(f"Synced {len(synced)} commands globally!")
         
-        await ctx.send(f"Synced {len(synced_guild)} to guild!")
+        guild = discord.Object(id=915698061530001448)
+        synced = await bot.tree.sync(guild=guild)
+        await ctx.send(f"Synced {len(synced)} commands to guild!")
+        
     except Exception as e:
         print(f"Sync error: {e}")
         await ctx.send(f"Sync failed: {e}")
+
+@bot.command(name="clear_commands")
+@commands.is_owner()
+async def clear_commands(ctx: Context):
+    """Clear all slash commands to fix duplicates"""
+    try:
+        guild = discord.Object(id=915698061530001448)
+        bot.tree.clear_commands(guild=guild)
+        await bot.tree.sync(guild=guild)
+        
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+        
+        await ctx.send("Cleared all commands! Use -sync to re-add them.")
+    except Exception as e:
+        await ctx.send(f"Clear failed: {e}")
 
 @bot.command(name="suicide")
 @commands.is_owner()
@@ -42,14 +59,12 @@ async def suicide(ctx: Context):
     try:
         await bot.remove_cog("Manager")
         await bot.add_cog(Manager(bot))
-        # Re-sync after reloading
         guild = discord.Object(id=915698061530001448)
-        bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
         await ctx.send("MUSIIIIII REEEELOADDDDEEEEEEEDDDD DAN DAN DANDAN DANDAN DANDANDANDAN DAN DAN")
     except Exception as e:
         await ctx.send(f"Reload failed: {e}")
-        
+
 with open("token", "r") as f:
     token = f.read().strip()
 
