@@ -497,22 +497,22 @@ class Manager(Cog):
         self.bot: Bot = bot
         self.queue: List[Song] = []
         self.current_song: Song = None
-        self.previous_song: Song = None  # NEW: Track previous song for rewind
+        self.previous_song: Song = None  
         self.voice_client: VoiceClient = None
         self.getter: Getter = Getter()
         self.song_playing_since: Optional[float] = None
         self.is_playing_flag: bool = False
-        self.is_paused: bool = False  # NEW: Track pause state
-        self.pause_time: Optional[float] = None  # NEW: Track when paused
+        self.is_paused: bool = False  
+        self.pause_time: Optional[float] = None  
         self.play_lock = asyncio.Lock()
         self.active_poll_message: Optional[discord.Message] = None
 
     def next_song(self):
         if len(self.queue) > 0:
-            self.previous_song = self.current_song  # NEW: Store previous song
+            self.previous_song = self.current_song
             self.current_song = self.queue.pop(0)
         else:
-            self.previous_song = self.current_song  # NEW: Store previous song
+            self.previous_song = self.current_song
             self.current_song = None
 
     def add_to_queue(self, song: Song) -> bool:
@@ -608,7 +608,6 @@ class Manager(Cog):
             if error:
                 print(f"Error playing song: {error}")
 
-            # Check if we're still connected
             if not self.voice_client or not self.voice_client.is_connected():
                 print("Voice client not connected, stopping playback")
                 return
@@ -626,13 +625,10 @@ class Manager(Cog):
 
             print(f"Playing: {self.current_song.name}")
             
-            # Try to play the song with retry mechanism
             for attempt in range(3):
                 try:
-                    # Check stream URL validity
                     stream_url = self.current_song.stream_url
                     
-                    # Test if stream URL is still valid
                     try:
                         head = requests.head(stream_url, allow_redirects=True, timeout=10)
                         if head.status_code == 403 or head.status_code >= 400:
@@ -644,10 +640,8 @@ class Manager(Cog):
                         self.current_song = self.getter.reload_stream_url(self.current_song)
                         stream_url = self.current_song.stream_url
                     
-                    # Create audio source
                     source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
                     
-                    # Check if still connected before playing
                     if not self.voice_client.is_connected():
                         print("Lost connection while preparing to play")
                         return
@@ -656,30 +650,28 @@ class Manager(Cog):
                     
                     self.song_playing_since = time.time()
                     self.is_playing_flag = True
-                    self.reconnect_attempts = 0  # Reset reconnect attempts on successful play
+                    self.reconnect_attempts = 0
                     
                     def after_playing(err):
                         print("after_playing wurde aufgerufen.")
                         if err:
                             print(f"Player error: {err}")
-                        # Check if we're still connected before continuing
                         if self.voice_client and self.voice_client.is_connected():
                             asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
                         else:
                             print("Not connected after song finished, stopping playback")
                     
                     self.voice_client.play(source, after=after_playing)
-                    return  # Successfully started playing
+                    return 
                     
                 except Exception as e:
                     print(f"Error in _play attempt {attempt + 1}: {e}")
-                    if attempt == 2:  # Last attempt
+                    if attempt == 2: 
                         print("All play attempts failed, trying next song")
                         if self.queue:
                             asyncio.run_coroutine_threadsafe(self._play(), self.bot.loop)
                         return
                     
-                    # Wait before retry
                     await asyncio.sleep(2)
 
 
@@ -695,7 +687,6 @@ class Manager(Cog):
                 self.current_song = dummy_song
         print("Manager cog loaded, syncing commands...")
                 
-    # Event handlers for voice connection issues
     @Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member == self.bot.user:
@@ -703,9 +694,9 @@ class Manager(Cog):
                 print("Bot was disconnected from voice channel")
                 self.voice_client = None
                 self.current_song = None
-                self.previous_song = None  # NEW: Clear previous song
+                self.previous_song = None
                 self.queue.clear()
-                self.is_paused = False  # NEW: Reset pause state
+                self.is_paused = False
                 self.active_poll_message = None
                 await self.set_status()
 
@@ -725,7 +716,6 @@ class Manager(Cog):
             if self.voice_client.channel != interaction.user.voice.channel:
                 raise DifferentVoiceChannelException()
 
-            #Playlist or Single Song
             if validators.url(song) and self.getter.is_playlist_url(song):
                 await interaction.followup.send("🎵 Playlist erkannt! Lade Songs...")
                 
@@ -737,7 +727,6 @@ class Manager(Cog):
                     
                     added_count = self.add_songs_to_queue(songs)
                     
-                    # Start playing if not already playing
                     if not self.is_playing():
                         await self._play()
                     
@@ -753,7 +742,6 @@ class Manager(Cog):
                     await interaction.followup.send(f"❌ Fehler beim Laden der Playlist: {str(e)}")
             
             else:
-                #One Song
                 if validators.url(song):
                     song_obj = self.getter.get_song_by_url(song)
                 else:
@@ -973,7 +961,7 @@ class Manager(Cog):
         """Monitor the poll and skip song if majority votes yes"""
         try:
             # Wait for 30 seconds (our custom timeout)
-            await asyncio.sleep(30)
+            await asyncio.sleep(120)
             
             # Fetch updated message to get poll results
             try:
