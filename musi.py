@@ -1,9 +1,9 @@
 import discord
 import validators
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ext.commands import Bot, Cog, check, is_owner, guild_only, Context
-
+from datetime import datetime
 from Helpers import Manager
 
 bot = Bot(command_prefix="-", intents=discord.Intents.all(), help_command=None,owner_id=707656939869306973,
@@ -37,6 +37,14 @@ async def on_ready():
 async def globally_block_dms(ctx: Context):
     return ctx.guild is not None
 
+@tasks.loop(datetime.time(hour=16, tzinfo=datetime.timezone.cet) )
+async def daily_notification():
+    channel = bot.get_channel(915698141381165066)
+    if channel:
+        await channel.send("📢 Guten Morgen! Hier ist deine tägliche Nachricht. 🌞")
+    else:
+        print("Channel nicht gefunden!")
+        
 @bot.command(name="sync")
 @commands.is_owner()
 async def sync(ctx: Context):

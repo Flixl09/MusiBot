@@ -505,8 +505,7 @@ class Manager(Cog):
         self.is_paused: bool = False  # NEW: Track pause state
         self.pause_time: Optional[float] = None  # NEW: Track when paused
         self.play_lock = asyncio.Lock()
-        self.vote_skip_poll: Optional[VoteSkipPoll] = None  # NEW: Current vote skip poll
-
+        self.active_poll_message: Optional[discord.Message] = None
 
     def next_song(self):
         if len(self.queue) > 0:
@@ -707,7 +706,7 @@ class Manager(Cog):
                 self.previous_song = None  # NEW: Clear previous song
                 self.queue.clear()
                 self.is_paused = False  # NEW: Reset pause state
-                self.vote_skip_poll = None  # NEW: Clear vote skip poll
+                self.active_poll_message = None
                 await self.set_status()
 
 
@@ -930,55 +929,94 @@ class Manager(Cog):
                 await interaction.response.send_message("Ich spiele gerade nichts")
                 return
 
-            
+            # Count non-bot members in voice channel
             channel_members = len([m for m in self.voice_client.channel.members if not m.bot])
             
-             
+            # If only one person (or less), skip immediately
             if channel_members <= 1:
                 self.voice_client.stop()
                 await interaction.response.send_message("🎵 Song geskippt")
                 return
 
-           
-            if self.vote_skip_poll and not self.vote_skip_poll.is_expired():
-               
-                if interaction.user.id in self.vote_skip_poll.voted_users:
-                    await interaction.response.send_message("Du hast bereits abgestimmt!")
-                    return
-                
-                if self.vote_skip_poll.add_vote(interaction.user.id):
-                    
-                    self.voice_client.stop()
-                    self.vote_skip_poll = None
-                    await interaction.response.send_message("🎵 Vote Skip erfolgreich! Song wird geskippt")
-                else:
-                    progress = self.vote_skip_poll.get_progress()
-                    await interaction.response.send_message(f"🗳️ Vote hinzugefügt! ({progress} Stimmen)")
-            else:
-                self.vote_skip_poll = VoteSkipPoll(channel_members)
-                
-                if self.vote_skip_poll.add_vote(interaction.user.id):
-                    self.voice_client.stop()
-                    self.vote_skip_poll = None
-                    await interaction.response.send_message("🎵 Vote Skip erfolgreich! Song wird geskippt")
-                else:
-                    progress = self.vote_skip_poll.get_progress()
-                    embed = Embed(
-                        title="🗳️ Vote Skip gestartet",
-                        description=f"Stimme ab um den aktuellen Song zu skippen!\n\n**{progress}** Stimmen benötigt",
-                        colour=0xFFFF00
-                    )
-                    embed.add_field(
-                        name="Aktueller Song",
-                        value=f"[{self.current_song.name}]({self.current_song.url})",
-                        inline=False
-                    )
-                    embed.set_footer(text="Vote läuft 30 Sekunden • Verwende /voteskip um abzustimmen")
-                    await interaction.response.send_message(embed=embed)
+            # Check if there's already an active poll
+            if self.active_poll_message:
+                await interaction.response.send_message("Es läuft bereits eine Abstimmung zum Skippen!")
+                return
+
+            # Create poll
+            poll = discord.Poll(
+                question=f"Skip '{self.current_song.name}'?",
+                duration=timedelta(seconds=30)
+            )
+            poll.add_answer(text="✅ Ja", emoji="✅")
+            poll.add_answer(text="❌ Nein", emoji="❌")
+
+            await interaction.response.send_message(
+                f"🗳️ **Vote Skip gestartet!**\n"
+                f"Aktueller Song: **{self.current_song.name}**\n"
+                f"Mehr als 50% der {channel_members} Mitglieder müssen für 'Ja' stimmen.",
+                poll=poll
+            )
+            
+            # Store the poll message
+            self.active_poll_message = await interaction.original_response()
+            
+            # Start background task to check poll results
+            asyncio.create_task(self._monitor_poll(self.active_poll_message, channel_members))
 
         except Exception as e:
             await interaction.response.send_message(f"Fehler: {str(e)}")
 
+    async def _monitor_poll(self, poll_message: discord.Message, total_members: int):
+        """Monitor the poll and skip song if majority votes yes"""
+        try:
+            # Wait for poll to end (30 seconds + small buffer)
+            await asyncio.sleep(32)
+            
+            # Fetch updated message to get poll results
+            try:
+                updated_message = await poll_message.fetch()
+            except discord.NotFound:
+                # Message was deleted
+                self.active_poll_message = None
+                return
+            
+            if not updated_message.poll:
+                self.active_poll_message = None
+                return
+                
+            poll = updated_message.poll
+            
+            # Find yes and no answers
+            yes_votes = 0
+            no_votes = 0
+            
+            for answer in poll.answers:
+                if "✅" in answer.text or "Ja" in answer.text:
+                    yes_votes = answer.vote_count
+                elif "❌" in answer.text or "Nein" in answer.text:
+                    no_votes = answer.vote_count
+            
+            total_votes = yes_votes + no_votes
+            
+            # Check if more than 50% voted yes
+            if total_votes > 0 and yes_votes > (total_members / 2):
+                # Skip the song
+                if self.voice_client and self.is_playing():
+                    self.voice_client.stop()
+                    await poll_message.reply("🎵 **Vote Skip erfolgreich!** Song wird geskippt.")
+                else:
+                    await poll_message.reply("🎵 Vote Skip erfolgreich, aber es spielt bereits kein Song mehr.")
+            else:
+                await poll_message.reply(f"🎵 **Vote Skip fehlgeschlagen.** ({yes_votes}/{total_members} für Ja)")
+            
+            # Clear the active poll
+            self.active_poll_message = None
+            
+        except Exception as e:
+            print(f"Error monitoring poll: {e}")
+            self.active_poll_message = None
+            
     @app_commands.command(name="stop", description="Stop the current song")
     async def stop(self, interaction: discord.Interaction):
         try:
