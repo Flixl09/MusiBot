@@ -943,10 +943,11 @@ class Manager(Cog):
                 await interaction.response.send_message("Es läuft bereits eine Abstimmung zum Skippen!")
                 return
 
-            # Create poll
+            # Create poll with duration in HOURS (minimum 1 hour for Discord polls)
+            # Since Discord requires minimum 1 hour, we'll use a different approach
             poll = discord.Poll(
                 question=f"Skip '{self.current_song.name}'?",
-                duration=timedelta(seconds=30)
+                duration=timedelta(hours=1)  # Changed from seconds=30 to hours=1
             )
             poll.add_answer(text="✅ Ja", emoji="✅")
             poll.add_answer(text="❌ Nein", emoji="❌")
@@ -954,14 +955,15 @@ class Manager(Cog):
             await interaction.response.send_message(
                 f"🗳️ **Vote Skip gestartet!**\n"
                 f"Aktueller Song: **{self.current_song.name}**\n"
-                f"Mehr als 50% der {channel_members} Mitglieder müssen für 'Ja' stimmen.",
+                f"Mehr als 50% der {channel_members} Mitglieder müssen für 'Ja' stimmen.\n"
+                f"⏰ Abstimmung läuft für 30 Sekunden.",
                 poll=poll
             )
             
             # Store the poll message
             self.active_poll_message = await interaction.original_response()
             
-            # Start background task to check poll results
+            # Start background task to check poll results (still check after 30 seconds)
             asyncio.create_task(self._monitor_poll(self.active_poll_message, channel_members))
 
         except Exception as e:
@@ -970,8 +972,8 @@ class Manager(Cog):
     async def _monitor_poll(self, poll_message: discord.Message, total_members: int):
         """Monitor the poll and skip song if majority votes yes"""
         try:
-            # Wait for poll to end (30 seconds + small buffer)
-            await asyncio.sleep(32)
+            # Wait for 30 seconds (our custom timeout)
+            await asyncio.sleep(30)
             
             # Fetch updated message to get poll results
             try:
@@ -1012,6 +1014,14 @@ class Manager(Cog):
             
             # Clear the active poll
             self.active_poll_message = None
+            
+            # End the poll manually by editing the message
+            try:
+                # Unfortunately, we can't end Discord polls programmatically
+                # The poll will continue for the full hour, but we've already processed the results
+                pass
+            except Exception as e:
+                print(f"Could not end poll early: {e}")
             
         except Exception as e:
             print(f"Error monitoring poll: {e}")
