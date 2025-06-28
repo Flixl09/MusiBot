@@ -848,7 +848,36 @@ class Manager(Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Fehler: {str(e)}")
             
-    
+    @app_commands.command(name="pause", description="Pause or resume the current song")
+    async def pause(self, interaction: discord.Interaction):
+        try:
+            if not self.voice_client:
+                raise BotNotInVoiceException()
+            if not interaction.user.voice or interaction.user.voice.channel != self.voice_client.channel:
+                raise DifferentVoiceChannelException()
+
+            if not self.is_playing():
+                await interaction.response.send_message("Ich spiele gerade nichts")
+                return
+
+            if self.voice_client.is_paused():
+                self.voice_client.resume()
+                self.is_paused = False
+                # Adjust the playing time to account for pause duration
+                if self.pause_time and self.song_playing_since:
+                    pause_duration = time.time() - self.pause_time
+                    self.song_playing_since += pause_duration
+                self.pause_time = None
+                await interaction.response.send_message("▶️ Song fortgesetzt")
+            else:
+                self.voice_client.pause()
+                self.is_paused = True
+                self.pause_time = time.time()
+                await interaction.response.send_message("⏸️ Song pausiert")
+                
+        except Exception as e:
+            await interaction.response.send_message(f"Fehler: {str(e)}")
+
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
         try:
@@ -865,6 +894,90 @@ class Manager(Cog):
         except Exception as e:
             await interaction.response.send_message(f"Fehler: {str(e)}")
 
+    @app_commands.command(name="back", description="Play the previous song again")
+    async def back(self, interaction: discord.Interaction):
+        try:
+            if not self.voice_client:
+                raise BotNotInVoiceException()
+            if not interaction.user.voice or interaction.user.voice.channel != self.voice_client.channel:
+                raise DifferentVoiceChannelException()
+
+            if not self.previous_song:
+                await interaction.response.send_message("Kein vorheriger Song verfügbar")
+                return
+
+            
+            self.queue.insert(0, self.previous_song)
+            if self.is_playing():
+                self.voice_client.stop()
+                await interaction.response.send_message(f"⏮️ Spiele vorherigen Song: **{self.previous_song.name}**")
+            else:
+                await self._play()
+                await interaction.response.send_message(f"▶️ Spiele vorherigen Song: **{self.previous_song.name}**")
+
+        except Exception as e:
+            await interaction.response.send_message(f"Fehler: {str(e)}")
+            
+    @app_commands.command(name="voteskip", description="Start a vote to skip the current song")
+    async def voteskip(self, interaction: discord.Interaction):
+        try:
+            if not self.voice_client:
+                raise BotNotInVoiceException()
+            if not interaction.user.voice or interaction.user.voice.channel != self.voice_client.channel:
+                raise DifferentVoiceChannelException()
+
+            if not self.is_playing():
+                await interaction.response.send_message("Ich spiele gerade nichts")
+                return
+
+            
+            channel_members = len([m for m in self.voice_client.channel.members if not m.bot])
+            
+             
+            if channel_members <= 1:
+                self.voice_client.stop()
+                await interaction.response.send_message("🎵 Song geskippt")
+                return
+
+           
+            if self.vote_skip_poll and not self.vote_skip_poll.is_expired():
+               
+                if interaction.user.id in self.vote_skip_poll.voted_users:
+                    await interaction.response.send_message("Du hast bereits abgestimmt!")
+                    return
+                
+                if self.vote_skip_poll.add_vote(interaction.user.id):
+                    
+                    self.voice_client.stop()
+                    self.vote_skip_poll = None
+                    await interaction.response.send_message("🎵 Vote Skip erfolgreich! Song wird geskippt")
+                else:
+                    progress = self.vote_skip_poll.get_progress()
+                    await interaction.response.send_message(f"🗳️ Vote hinzugefügt! ({progress} Stimmen)")
+            else:
+                self.vote_skip_poll = VoteSkipPoll(channel_members)
+                
+                if self.vote_skip_poll.add_vote(interaction.user.id):
+                    self.voice_client.stop()
+                    self.vote_skip_poll = None
+                    await interaction.response.send_message("🎵 Vote Skip erfolgreich! Song wird geskippt")
+                else:
+                    progress = self.vote_skip_poll.get_progress()
+                    embed = Embed(
+                        title="🗳️ Vote Skip gestartet",
+                        description=f"Stimme ab um den aktuellen Song zu skippen!\n\n**{progress}** Stimmen benötigt",
+                        colour=0xFFFF00
+                    )
+                    embed.add_field(
+                        name="Aktueller Song",
+                        value=f"[{self.current_song.name}]({self.current_song.url})",
+                        inline=False
+                    )
+                    embed.set_footer(text="Vote läuft 30 Sekunden • Verwende /voteskip um abzustimmen")
+                    await interaction.response.send_message(embed=embed)
+
+        except Exception as e:
+            await interaction.response.send_message(f"Fehler: {str(e)}")
 
     @app_commands.command(name="stop", description="Stop the current song")
     async def stop(self, interaction: discord.Interaction):
@@ -990,4 +1103,49 @@ class Manager(Cog):
         except Exception as e:
             await interaction.response.send_message(f"Fehler: {str(e)}")
             
-            ### ToDO: 
+    @app_commands.command(name="next", description="Move a song from the queue to play next")
+    @app_commands.describe(position="Position of the song in the queue (1-based)")
+    async def next(self, interaction: discord.Interaction, position: int):
+        try:
+            if not self.voice_client:
+                raise BotNotInVoiceException()
+            if not interaction.user.voice or interaction.user.voice.channel != self.voice_client.channel:
+                raise DifferentVoiceChannelException()
+
+            if not self.queue:
+                await interaction.response.send_message("Die Warteschlange ist leer")
+                return
+
+            # Convert to 0-based index
+            song_index = position - 1
+            
+            if song_index < 0 or song_index >= len(self.queue):
+                await interaction.response.send_message(f"Ungültige Position. Warteschlange hat {len(self.queue)} Songs")
+                return
+
+            # Get the song before moving it
+            song_to_move = self.queue[song_index]
+            
+            # Move the song to next position
+            if self.move_to_next(song_index):
+                embed = Embed(
+                    title="⏭️ Song verschoben",
+                    description=f"**{song_to_move.name}** wird als nächstes gespielt",
+                    colour=0x00FF00
+                )
+                embed.add_field(
+                    name="Vorherige Position",
+                    value=f"#{position}",
+                    inline=True
+                )
+                embed.add_field(
+                    name="Neue Position",
+                    value="#1 (Nächster Song)",
+                    inline=True
+                )
+                await interaction.response.send_message(embed=embed)
+            else:
+                await interaction.response.send_message("Fehler beim Verschieben des Songs")
+
+        except Exception as e:
+            await interaction.response.send_message(f"Fehler: {str(e)}")
