@@ -9,7 +9,7 @@ import random
 from math import floor
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
-
+from typing import Optional, List 
 import discord
 import requests
 from discord import VoiceClient, app_commands, Embed, VoiceProtocol
@@ -695,10 +695,6 @@ class Manager(Cog):
             dummy_song = self.getter.db.get_dummy(Song)
             if dummy_song:
                 self.current_song = dummy_song
-
-        self.tree.copy_global_to(guild=discord.Object(id=915698061530001448))
-        await self.tree.sync(guild=discord.Object(id=915698061530001448))
-
                 
     # Event handlers for voice connection issues
     @Cog.listener()
