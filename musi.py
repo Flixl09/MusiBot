@@ -1,13 +1,17 @@
 import discord
 import validators
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ext.commands import Bot, Cog, check, is_owner, guild_only, Context
+import datetime
 
 from Helpers import Manager
 
 bot = Bot(command_prefix="-", intents=discord.Intents.all(), help_command=None,owner_id=707656939869306973,
           activity=discord.Game(name="Loading..."), status=discord.Status.dnd)
+
+CHANNEL_ID = 915698141381165066
+UHRZEIT = datetime.time(hour=23, minute=0, tzinfo=datetime.timezone.utc)
 
 
 @bot.event
@@ -31,6 +35,14 @@ async def on_ready():
         print(f"Failed to sync commands: {e}")
     
     await bot.change_presence(activity=discord.Game(name="Ready!"), status=discord.Status.online)
+
+@tasks.loop(time=UHRZEIT)
+async def daily_notification():
+    channel = bot.get_channel(CHANNEL_ID)
+    if channel:
+        await channel.send("Wann Bitches? <@>394052202353786882>")
+    else:
+        print("Channel nicht gefunden!")
 
 
 @bot.check
