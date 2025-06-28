@@ -406,116 +406,216 @@ class Getter:
         
     async def fetch_and_stream_playlist(self, url: str, max_songs: int = 50) -> AsyncGenerator[
         Tuple[Optional['Song'], List['Song'], int], None]:
-        """Fetch playlist songs and yield them as they're processed (first immediately)"""
+        """Improved playlist fetching with better error handling"""
         try:
+            print(f"[stream] Starting playlist extraction from: {url}")
+            
+            # Extract playlist ID from URL
+            parsed_url = urlparse(url)
+            query_params = parse_qs(parsed_url.query)
+            
+            if 'list' not in query_params:
+                raise Exception("No playlist ID found in URL")
+                
+            playlist_id = query_params['list'][0]
+            print(f"[stream] Found playlist ID: {playlist_id}")
+            
+            # Use direct playlist URL for better reliability
+            playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            print(f"[stream] Using playlist URL: {playlist_url}")
+            
+            # Simplified yt-dlp options
             playlist_opts = {
                 'format': 'bestaudio/best',
-                'extractaudio': True,
-                'audioformat': 'mp3',
-                'outtmpl': '%(title)s.%(ext)s',
-                'restrictfilenames': True,
-                'noplaylist': False,
-                'extract_flat': True,
                 'quiet': True,
                 'no_warnings': True,
                 'ignoreerrors': True,
+                'extract_flat': True,  # Start with flat extraction
                 'playlistend': max_songs,
                 'playliststart': 1,
             }
 
-            print(f"[stream] Attempting to extract playlist from: {url}")
-
             with YoutubeDL(playlist_opts) as ydl:
                 try:
-                    playlist_info = ydl.extract_info(url, download=False)
-                except Exception as e:
-                    print(f"[stream] Initial extraction failed: {e}")
-                    playlist_opts['extract_flat'] = False
-                    playlist_info = ydl.extract_info(url, download=False)
-
-                if not playlist_info:
-                    raise Exception("No playlist info found")
-
-                entries = []
-                if 'entries' in playlist_info:
-                    entries = playlist_info['entries']
-                elif 'playlist' in playlist_info:
-                    parsed = urlparse(url)
-                    q = parse_qs(parsed.query)
-                    if 'list' in q:
-                        list_id = q['list'][0]
-                        playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
-                        print(f"[stream] Trying full playlist: {playlist_url}")
+                    print("[stream] Attempting playlist extraction...")
+                    playlist_info = ydl.extract_info(playlist_url, download=False)
+                    
+                    if not playlist_info:
+                        print("[stream] No playlist info returned, trying alternative method...")
+                        # Try without extract_flat
+                        playlist_opts['extract_flat'] = False
                         playlist_info = ydl.extract_info(playlist_url, download=False)
-                        entries = playlist_info.get('entries', [])
+                    
+                    if not playlist_info:
+                        raise Exception("Could not extract any playlist information")
+                    
+                    print(f"[stream] Playlist info extracted. Keys: {list(playlist_info.keys())}")
+                    
+                    # Get entries
+                    entries = playlist_info.get('entries', [])
+                    if not entries:
+                        print("[stream] No entries found in playlist_info")
+                        raise Exception("Playlist appears to be empty or private")
+                    
+                    # Filter valid entries
+                    valid_entries = [entry for entry in entries if entry is not None]
+                    print(f"[stream] Found {len(valid_entries)} valid entries out of {len(entries)} total")
+                    
+                    if not valid_entries:
+                        raise Exception("No valid entries found in playlist")
+                    
+                    # Limit entries
+                    if len(valid_entries) > max_songs:
+                        valid_entries = valid_entries[:max_songs]
+                        print(f"[stream] Limited to {max_songs} songs")
 
-                entries = [e for e in entries if e is not None]
-                if len(entries) > max_songs:
-                    entries = entries[:max_songs]
+                    processed_songs = []
+                    platform = self.yt  # Always YouTube for playlists
+                    
+                    print(f"[stream] Processing {len(valid_entries)} entries...")
 
-                platform = self.yt if self.validate_yt_playlist_url(url) else self.sc
-                processed_songs = []
+                    for i, entry in enumerate(valid_entries):
+                        try:
+                            if len(processed_songs) >= max_songs:
+                                break
+                            
+                            # Get video ID and construct URL
+                            video_id = entry.get('id')
+                            if not video_id:
+                                print(f"[stream] Entry {i+1}: No video ID found")
+                                continue
+                            
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            
+                            # Check if song exists in database
+                            existing_song = self.db.get_by_url(Song, video_url)
+                            if existing_song:
+                                processed_songs.append(existing_song)
+                                print(f"[stream] Entry {i+1}: Found existing song: {existing_song.name}")
+                                
+                                # Yield first song immediately
+                                if i == 0:
+                                    yield existing_song, processed_songs, len(valid_entries)
+                                continue
 
-                for i, entry in enumerate(entries):
-                    try:
-                        video_url = (
-                            entry.get('webpage_url')
-                            or entry.get('url')
-                            or (f"https://www.youtube.com/watch?v={entry['id']}" if platform == self.yt else None)
-                        )
-                        if not video_url:
-                            print(f"[stream] Skipping {i+1}: No valid URL")
-                            continue
+                            # For flat extraction, we need to get full video info
+                            print(f"[stream] Entry {i+1}: Extracting full video info for {video_id}")
+                            
+                            single_opts = {
+                                'format': 'bestaudio/best',
+                                'quiet': True,
+                                'no_warnings': True,
+                                'ignoreerrors': False,  # Don't ignore errors for individual videos
+                            }
+                            
+                            with YoutubeDL(single_opts) as single_ydl:
+                                try:
+                                    video_info = single_ydl.extract_info(video_url, download=False)
+                                except Exception as e:
+                                    print(f"[stream] Entry {i+1}: Failed to extract video info: {e}")
+                                    continue
 
-                        existing_song = self.db.get_by_url(Song, video_url)
-                        if existing_song:
-                            processed_songs.append(existing_song)
+                            if not video_info:
+                                print(f"[stream] Entry {i+1}: No video info returned")
+                                continue
+
+                            # Create song object
+                            title = video_info.get('title', f'Unknown Song {i+1}')
+                            channel = video_info.get('channel', video_info.get('uploader', 'Unknown'))
+                            duration = video_info.get('duration', 0)
+                            stream_url = video_info.get('url', '')
+                            
+                            artist = self.db.get_or_add_by_name(Artist, channel)
+                            
+                            song = Song(
+                                name=title,
+                                url=video_url,
+                                duration=duration,
+                                artists=artist,
+                                stream_url=stream_url,
+                                platforms=platform
+                            )
+                            
+                            self.db.add(Song, song)
+                            processed_songs.append(song)
+                            
+                            print(f"[stream] Entry {i+1}: Created song: {title}")
+                            
+                            # Yield first song immediately for playback
                             if i == 0:
-                                yield existing_song, processed_songs, len(entries)
+                                yield song, processed_songs, len(valid_entries)
+
+                        except Exception as e:
+                            print(f"[stream] Error processing entry {i+1}: {e}")
                             continue
 
-                        if playlist_opts.get('extract_flat', False):
-                            with YoutubeDL({'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True}) as single_ydl:
-                                video_info = single_ydl.extract_info(video_url, download=False)
-                        else:
-                            video_info = entry
+                    print(f"[stream] Completed processing. Total songs: {len(processed_songs)}")
+                    
+                    # Final yield with all processed songs
+                    yield None, processed_songs, len(valid_entries)
 
-                        if not video_info:
-                            print(f"[stream] Skipping {i+1}: No video info")
-                            continue
-
-                        artist_name = (
-                            video_info.get('channel') if platform == self.yt
-                            else video_info.get('artist', video_info.get('uploader', 'Unknown'))
-                        )
-                        artist = self.db.get_or_add_by_name(Artist, artist_name)
-
-                        song = Song(
-                            name=video_info.get('title', f'Unknown Song {i+1}'),
-                            url=video_info.get('webpage_url', video_url),
-                            duration=video_info.get('duration', 0),
-                            artists=artist,
-                            stream_url=video_info.get('url', ''),
-                            platforms=platform
-                        )
-
-                        self.db.add(Song, song)
-                        processed_songs.append(song)
-
-                        if i == 0:
-                            yield song, processed_songs, len(entries)  # first song for playback
-
-                        print(f"[stream] Processed song {i+1}/{len(entries)}: {song.name}")
-
-                    except Exception as e:
-                        print(f"[stream] Error processing song {i+1}: {e}")
-                        continue
-
-                yield None, processed_songs, len(entries)  # Final result
+                except Exception as e:
+                    print(f"[stream] Error during playlist extraction: {e}")
+                    # Try one more time with different options
+                    print("[stream] Attempting fallback extraction...")
+                    
+                    fallback_opts = {
+                        'format': 'bestaudio/best',
+                        'quiet': False,  # Enable logging for debugging
+                        'no_warnings': False,
+                        'ignoreerrors': True,
+                        'extract_flat': False,  # Get full info immediately
+                        'playlistend': min(max_songs, 10),  # Limit for fallback
+                    }
+                    
+                    try:
+                        with YoutubeDL(fallback_opts) as fallback_ydl:
+                            fallback_info = fallback_ydl.extract_info(playlist_url, download=False)
+                            
+                            if fallback_info and fallback_info.get('entries'):
+                                entries = [e for e in fallback_info['entries'] if e is not None]
+                                
+                                if entries:
+                                    print(f"[stream] Fallback successful: {len(entries)} entries")
+                                    processed_songs = []
+                                    
+                                    for i, entry in enumerate(entries[:max_songs]):
+                                        try:
+                                            artist = self.db.get_or_add_by_name(
+                                                Artist, 
+                                                entry.get('channel', entry.get('uploader', 'Unknown'))
+                                            )
+                                            
+                                            song = Song(
+                                                name=entry.get('title', f'Unknown Song {i+1}'),
+                                                url=entry.get('webpage_url', f"https://www.youtube.com/watch?v={entry.get('id', '')}"),
+                                                duration=entry.get('duration', 0),
+                                                artists=artist,
+                                                stream_url=entry.get('url', ''),
+                                                platforms=self.yt
+                                            )
+                                            
+                                            self.db.add(Song, song)
+                                            processed_songs.append(song)
+                                            
+                                            if i == 0:
+                                                yield song, processed_songs, len(entries)
+                                                
+                                        except Exception as song_error:
+                                            print(f"[stream] Fallback entry {i+1} error: {song_error}")
+                                            continue
+                                    
+                                    yield None, processed_songs, len(entries)
+                                    return
+                                    
+                    except Exception as fallback_error:
+                        print(f"[stream] Fallback also failed: {fallback_error}")
+                        
+                    raise Exception(f"All extraction methods failed. Last error: {e}")
 
         except Exception as e:
-            print(f"[stream] Failed to stream playlist from {url}: {e}")
-            raise
+            print(f"[stream] Fatal error in playlist fetching: {e}")
+            raise Exception(f"Playlist extraction failed: {str(e)}")
         
     def fetch_from_url(self, url: str) -> Song:
         existing_song = self.db.get_by_url(Song, url)
@@ -701,7 +801,7 @@ class Manager(Cog):
     def is_connected(self) -> bool:
         return self.voice_client and self.voice_client.is_connected()
 
-    # NEW: Method to move song to front of queue
+    
     def move_to_next(self, song_index: int) -> bool:
         """Move a song from the queue to be played next"""
         if 0 <= song_index < len(self.queue):
@@ -831,7 +931,94 @@ class Manager(Cog):
             if dummy_song:
                 self.current_song = dummy_song
         print("Manager cog loaded, syncing commands...")
+    
+    def debug_playlist_extraction(self, url: str):
+        """Debug function to test playlist extraction without processing"""
+        try:
+            from urllib.parse import urlparse, parse_qs
+            
+            print("=== PLAYLIST DEBUG INFO ===")
+            print(f"Original URL: {url}")
+            
+            # Parse URL
+            parsed = urlparse(url)
+            query_params = parse_qs(parsed.query)
+            print(f"Parsed domain: {parsed.netloc}")
+            print(f"Query parameters: {query_params}")
+            
+            if 'list' in query_params:
+                playlist_id = query_params['list'][0]
+                print(f"Playlist ID: {playlist_id}")
                 
+                # Test different playlist URLs
+                test_urls = [
+                    f"https://www.youtube.com/playlist?list={playlist_id}",
+                    f"https://youtube.com/playlist?list={playlist_id}",
+                    url  # Original URL
+                ]
+                
+                for test_url in test_urls:
+                    print(f"\n--- Testing URL: {test_url} ---")
+                    
+                    opts = {
+                        'quiet': False,
+                        'no_warnings': False,
+                        'extract_flat': True,
+                        'playlistend': 5,  # Only test first 5
+                    }
+                    
+                    try:
+                        with YoutubeDL(opts) as ydl:
+                            info = ydl.extract_info(test_url, download=False)
+                            
+                            if info:
+                                print(f"✓ Extraction successful")
+                                print(f"  Title: {info.get('title', 'N/A')}")
+                                print(f"  Entries count: {len(info.get('entries', []))}")
+                                
+                                entries = info.get('entries', [])
+                                valid_entries = [e for e in entries if e is not None]
+                                print(f"  Valid entries: {len(valid_entries)}")
+                                
+                                if valid_entries:
+                                    first_entry = valid_entries[0]
+                                    print(f"  First entry ID: {first_entry.get('id', 'N/A')}")
+                                    print(f"  First entry title: {first_entry.get('title', 'N/A')}")
+                                    
+                                    # Test single video extraction
+                                    if first_entry.get('id'):
+                                        video_url = f"https://www.youtube.com/watch?v={first_entry['id']}"
+                                        print(f"  Testing single video: {video_url}")
+                                        
+                                        single_opts = {'quiet': True, 'no_warnings': True}
+                                        try:
+                                            with YoutubeDL(single_opts) as single_ydl:
+                                                video_info = single_ydl.extract_info(video_url, download=False)
+                                                if video_info:
+                                                    print(f"  ✓ Single video extraction successful")
+                                                    print(f"    Stream URL available: {'url' in video_info}")
+                                                else:
+                                                    print(f"  ✗ Single video extraction failed")
+                                        except Exception as e:
+                                            print(f"  ✗ Single video error: {e}")
+                                
+                                return True  # Success with this URL
+                            else:
+                                print(f"✗ No info returned")
+                                
+                    except Exception as e:
+                        print(f"✗ Error: {e}")
+                        
+            else:
+                print("✗ No playlist ID found in URL")
+                
+            print("=== END DEBUG INFO ===")
+            return False
+            
+        except Exception as e:
+            print(f"Debug function error: {e}")
+            return False
+        
     @Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member == self.bot.user:
