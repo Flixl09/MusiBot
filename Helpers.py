@@ -18,7 +18,7 @@ from discord.ext.commands import Cog, Bot
 from Database import *
 from yt_dlp import YoutubeDL
 import validators
-
+from typing import AsyncGenerator, Tuple, Optional, List
 
 ydl_opts = {
     'default_search': 'ytsearch',
