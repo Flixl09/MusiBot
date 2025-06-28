@@ -653,6 +653,33 @@ class Manager(Cog):
         self.queue.clear()
         return True
 
+    async def set_dummy_song(self, url: str):
+        """Set or update the dummy song in the database"""
+        try:
+            # Get or create the dummy song
+            dummy_song = self.getter.db.get_dummy(Song)
+            if dummy_song:
+                # Update existing dummy song
+                dummy_song.url = url
+                dummy_song.stream_url = url
+                dummy_song.name = "OE3 Live Stream"
+                self.getter.db.update(Song, dummy_song)
+            else:
+                # Create new dummy song
+                dummy_song = Song(
+                    name="OE3 Live Stream",
+                    url=url,
+                    stream_url=url,
+                    duration=0,  # Live streams have no duration
+                    artists=self.getter.db.get_or_add_by_name(Artist, "OE3"),
+                    platforms=self.getter.yt  # Use YouTube platform as default
+                )
+                self.getter.db.add_dummy(Song, dummy_song)
+            
+            print(f"Dummy song set to: {url}")
+        except Exception as e:
+            print(f"Error setting dummy song: {e}")
+            
     def duration(self):
         i = 0
         for song in self.queue:
@@ -797,6 +824,7 @@ class Manager(Cog):
         return vcs[0] if vcs else None
 
     async def cog_load(self):
+        await self.set_dummy_song("https://orf-live.ors-shoutcast.at/oe3-q2a")
         if not self.voice_client and self.get_voice_client_on_reload():
             self.voice_client = self.get_voice_client_on_reload()
             dummy_song = self.getter.db.get_dummy(Song)
