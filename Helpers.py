@@ -740,9 +740,9 @@ class Manager(Cog):
     @app_commands.command(name="playlist", description="Add a playlist to the queue")
     @app_commands.describe(
         url="Playlist URL (YouTube or SoundCloud)",
-        max_songs="Maximum number of songs to add (default: 50)"
+        max_songs="Maximum number of songs to add (default: 100)"
     )
-    async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 50):
+    async def playlist(self, interaction: discord.Interaction, url: str, max_songs: int = 100):
         await interaction.response.defer()
         
         try:
@@ -764,7 +764,7 @@ class Manager(Cog):
                 return
 
             # Limit max_songs
-            max_songs = min(max_songs, 100)  # Hard limit of 100 songs
+            max_songs = min(max_songs, 200)  
             
             await interaction.followup.send(f"🎵 Lade Playlist... (max. {max_songs} Songs)")
             
@@ -953,3 +953,5 @@ class Manager(Cog):
             await interaction.response.send_message("Warteschlange gemischt")
         except Exception as e:
             await interaction.response.send_message(f"Fehler: {str(e)}")
+            
+            ### ToDO: 

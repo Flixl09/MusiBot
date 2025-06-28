@@ -6,7 +6,7 @@ from discord.ext.commands import Bot, Cog, check, is_owner, guild_only, Context
 
 from Helpers import Manager
 
-bot = Bot(command_prefix="-", intents=discord.Intents.all(), help_command=None,
+bot = Bot(command_prefix="-", intents=discord.Intents.all(), help_command=None,owner_id=707656939869306973,
           activity=discord.Game(name="Loading..."), status=discord.Status.dnd)
 
 
