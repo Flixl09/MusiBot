@@ -409,3 +409,25 @@ class Manager(Cog):
         await self.queue.clear()
         self.current_song = None
         await interaction.response.send_message("Ich habe den Channel verlassen")
+
+    @app_commands.command(name="playnext", description="Spiele den Song als nächstes")
+    @app_commands.describe(song="Name or URL of the song")
+    async def playnext(self, interaction: discord.Interaction, *, song: str):
+        await interaction.response.defer()
+        if not interaction.user.voice:
+            raise UserNotInVoiceException()
+        if not self.voice_client:
+            await self.connect_to_channel(interaction.user.voice.channel)
+        if not interaction.user.voice.channel == self.voice_client.channel:
+            raise DifferentVoiceChannelException()
+
+        if validators.url(song):
+            song: Song = self.getter.fetch_from_url(song)
+        else:
+            song: Song = self.getter.get_song_by_name(song)
+
+        self.queue.insert(0, song)
+        song_name = song.name
+        if not self.is_playing():
+            self._play()
+        await interaction.followup.send(f"{song_name} wird als nächstes gespielt")
