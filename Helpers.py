@@ -281,6 +281,13 @@ class Manager(Cog):
             self.voice_client = self.get_voice_client_on_reload()
             self.current_song = self.getter.db.get_dummy(Song)
 
+
+    @Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        if self.voice_client and self.voice_client.channel:
+            if len(self.voice_client.channel.members) == 1:
+                await self._disconnect()
+
     @app_commands.command(name="play", description="Play a song")
     @app_commands.describe(song="Name or URL of the song")
     async def play(self, interaction: discord.Interaction, *, song: str):
