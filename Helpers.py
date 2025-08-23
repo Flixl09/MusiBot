@@ -397,3 +397,15 @@ class Manager(Cog):
 
         random.shuffle(self.queue)
         await interaction.response.send_message("Warteschlange gemischt")
+
+    @app_commands.command(name="leave", description="Lasse den Bot den Channel verlassen wenn niemand mehr da ist")
+    async def leave(self, interaction: discord.Interaction):
+        if not self.voice_client:
+            raise BotNotInVoiceException()
+        if not interaction.user.voice.channel == self.voice_client.channel:
+            raise DifferentVoiceChannelException()
+
+        await self._disconnect()
+        await self.queue.clear()
+        self.current_song = None
+        await interaction.response.send_message("Ich habe den Channel verlassen")
