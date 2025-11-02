@@ -30,7 +30,12 @@ ydl_opts = {
     }],
     'outtmpl': '%(title)s.%(ext)s',
     'restrictfilenames': True,
-    'noplaylist': True
+    'noplaylist': True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["default", "-tv_simply"]
+        }
+    }
 }
 
 ffmpeg_before_options = (
@@ -292,6 +297,7 @@ class Manager(Cog):
     @app_commands.describe(song="Name or URL of the song")
     async def play(self, interaction: discord.Interaction, *, song: str):
         await interaction.response.defer()
+
         if not interaction.user.voice:
             raise UserNotInVoiceException()
         if not self.voice_client:
@@ -309,6 +315,7 @@ class Manager(Cog):
         if not self.is_playing():
             self._play()
         await interaction.followup.send(f"{song_name} zur Warteschlange hinzugefügt")
+
 
     @app_commands.command(name="skip", description="Skip the current song")
     async def skip(self, interaction: discord.Interaction):
