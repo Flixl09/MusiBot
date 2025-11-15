@@ -96,7 +96,11 @@ class Getter:
             return song
 
     def fetch_from_url(self, url: str) -> Song:
-        urlpart = parse_qs(urlparse(url).query).get('v', [None])[0]
+        if "?v=" in url:
+            urlpart = parse_qs(urlparse(url).query).get('v', [None])[0]
+        else:
+            urlpart = url.split("/")[-1]
+
         url = "https://www.youtube.com/watch?v=" + urlpart
         print("URL: ", url)
         if self.db.get_by_url(Song, url):
@@ -292,6 +296,13 @@ class Manager(Cog):
         if self.voice_client and self.voice_client.channel:
             if len(self.voice_client.channel.members) == 1:
                 await self._disconnect()
+                await self.set_status()
+        if member == self.bot.user:
+            if not after.channel:
+                self.voice_client = None
+                self.current_song = None
+                self.queue.clear()
+                await self.set_status()
 
     @app_commands.command(name="play", description="Play a song")
     @app_commands.describe(song="Name or URL of the song")
